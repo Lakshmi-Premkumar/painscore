@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: workload-planner        # you can choose any name
+    env: python
+    plan: free                    # free plan is fine to start
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: planner-db
+          property: connectionString
+
+databases:
+  - name: planner-db
+    plan: free
