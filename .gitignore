@@ -1,16 +1,11 @@
-# Python
 __pycache__/
 *.pyc
-
-# Virtual envs
-.venv/
-venv/
-ENV/
-
-# Local data / sqlite files
+*.pyo
+*.pyd
 *.db
-
-# OS/Editor
-.DS_Store
-Thumbs.db
-.vscode/
+*.sqlite3
+*.xlsx
+*.csv
+.env
+modules.db
+.streamlit/secrets.toml
