@@ -4,7 +4,7 @@ services:
     env: python
     plan: free                    # free plan is fine to start
     buildCommand: pip install -r requirements.txt
-    startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0
+    startCommand: streamlit run App.py --server.port $PORT --server.address 0.0.0.0
     envVars:
       - key: DATABASE_URL
         fromDatabase:
