@@ -1,4 +1,4 @@
-
+#new code
 import streamlit as st
 import pandas as pd
 import itertools
@@ -59,14 +59,25 @@ if 'undo_caption' not in st.session_state:
     st.session_state.undo_caption = ""     # human-readable description of last applied change
 
 # ─── Sidebar navigation ──────────────────────────────────────
+# ─── Sidebar navigation ──────────────────────────────────────
 with st.sidebar:
     st.header("Navigate")
+    nav_items = ["Results", "Modules", "Module setup", "Heatmaps (all pairs)"]
+
+    # pick default based on current step (BEFORE creating the radio)
+    default_choice = (
+        "Modules"              if st.session_state.step == 0 else
+        "Module setup"         if st.session_state.step == 1 else
+        "Heatmaps (all pairs)" if st.session_state.step == "HEATMAP" else
+        "Results"
+    )
+
     choice = st.radio(
         "Go to",
-        ["Results", "Modules", "Module setup", "Heatmaps (all pairs)"],
-        index=0,  # default to Results
+        nav_items,
+        index=nav_items.index(default_choice),
         label_visibility="collapsed",
-        key="nav_choice"
+        key="nav_choice",
     )
 
 # Map sidebar choice to the existing step values you already use
@@ -79,6 +90,7 @@ elif choice == "Module setup":
 elif choice == "Heatmaps (all pairs)":
     st.session_state.heatmap_modules = "__ALL__"
     st.session_state.step = "HEATMAP"
+
 
    
 # ─── Helpers ──────────────────────────────────────────────────
@@ -102,6 +114,8 @@ def go_prev():
 def go_home():
     st.session_state.step = 0
     st.session_state.selected = None
+
+
 def ca_df(mod):
     """Return a small dataframe of all CAs for a module."""
     cas = st.session_state.ca_map.get(mod, [])
@@ -287,6 +301,30 @@ def total_cv_percent(weeks15_by_mod: dict) -> float:
     std = var ** 0.5
     return (std / mean) * 100.0
 
+def persist_cas(name, credits, assign_pct, ca_nms, ca_wts, ca_dls, ca_rels):
+    notional  = credits * assign_pct * 10
+    weekly    = st.session_state.baseline[name].copy()
+    prep_time = max(notional - sum(weekly[:12]), 0.0)
+    total_pct = sum(ca_wts) or 1.0
+
+    cas_list = []
+    for idx, (wt, dl, rel, nm) in enumerate(zip(ca_wts, ca_dls, ca_rels, ca_nms), start=1):
+        if (dl - rel) < 0 or rel < 1 or dl > 12:
+            st.warning(f"Invalid release/deadline for CA#{idx} — skipped.")
+            continue
+        cas_list.append((idx, wt, dl, rel))
+        weekly[dl - 1] += prep_time * (wt / total_pct)
+        st.session_state.ca_names.setdefault(name, {})[idx] = nm
+
+    weekly[6]   = 0
+    weekly[-3:] = [0, 0, 0]
+
+    st.session_state.modules[name] = weekly
+    st.session_state.ca_map[name]  = cas_list
+    save_cas(name, cas_list)
+    save_schedule(name, weekly)
+
+
 # ---- FAST cache + scenario generator ---------------------------------
 @st.cache_data(show_spinner=False)
 def _weeks15_cached(study_style, meta_items, ca_map_items, overrides_items):
@@ -345,22 +383,31 @@ if st.session_state.step == 0:
     st.title("All Modules")
     c1, c2 = st.columns([3,1])
     with c2:
-     if st.button("➕ Add New Module"):
-        st.session_state.selected = "__new__"
-        st.session_state["_name"] = ""
-        st.session_state["_credits"] = 0.0
-        st.session_state["_assign_pct"] = 0.0
-        st.session_state["_contact"] = 0.0
-        st.session_state["_n_ca"] = 0
+     # Add New Module
+        if st.button("➕ Add New Module"):
+            st.session_state.selected = "__new__"
+            st.session_state["_name"] = ""
+            st.session_state["_credits"] = 0.0
+            st.session_state["_assign_pct"] = 0.0
+            st.session_state["_contact"] = 0.0
+            st.session_state["_n_ca"] = 0
+            for k in list(st.session_state.keys()):
+                if k.startswith(("wt","dl","rel","nm")):
+                    del st.session_state[k]
+            st.session_state.step = 1
+            st.rerun()
 
-        # Clear previous CA values
-        for k in list(st.session_state.keys()):
-            if k.startswith("wt") or k.startswith("dl") or k.startswith("rel") or k.startswith("nm"):
-                del st.session_state[k]
+        # Edit existing
+    #    if st.button("✏️ Edit", key=f"edit_{mod}"):
+    #        st.session_state.selected = mod
+    #        st.session_state.step = 1
+    #        st.rerun()
 
 
-        st.session_state.step = 1
-        st.stop()
+    #    st.session_state.step = 1
+    #    st.session_state.nav_choice = "Module setup"
+    #   st.rerun()
+
 
 
 
@@ -378,37 +425,48 @@ if st.session_state.step == 0:
                 f"**Exam %:** {exam_pct*100:.0f}%  •  "
                 f"**Contact:** {ct}h/wk"
             )
+            
             if st.button("✏️ Edit", key=f"edit_{mod}"):
+                # clear old CA widget keys so new module can prefill correctly
+                for k in list(st.session_state.keys()):
+                    if k.startswith(("wt", "dl", "rel", "nm")) or k in {"_name","_credits","_assign_pct","_contact","_n_ca"}:
+                        del st.session_state[k]
                 st.session_state.selected = mod
                 st.session_state.step = 1
-                st.stop()
+                st.rerun()
 
+
+    
+    
     st.write("Click ‘Add New Module’ or ‘Edit’ to begin.")
 
-    # if they really want to skip straight on...
     
+
 
 # ─── STEP 1: Module Definitions + CAs ──────────────────────────
 elif st.session_state.step == 1:
     st.title("Step 1 of 2: Module Definitions")
 
-    # Pre-fill if editing existing
+    # Pre-fill if editing existing (only once per key!)
     if st.session_state.selected and st.session_state.selected != "__new__":
         sel = st.session_state.selected
         cr, ap, ct = st.session_state.meta[sel]
-        st.session_state["_name"]       = sel
-        st.session_state["_credits"]    = cr
-        st.session_state["_assign_pct"] = ap * 100
-        st.session_state["_contact"]    = ct
-        st.session_state["_n_ca"]       = len(st.session_state.ca_map.get(sel, []))
-        
+
+        # top-level module fields
+        if "_name" not in st.session_state:        st.session_state["_name"] = sel
+        if "_credits" not in st.session_state:     st.session_state["_credits"] = cr
+        if "_assign_pct" not in st.session_state:  st.session_state["_assign_pct"] = ap * 100
+        if "_contact" not in st.session_state:     st.session_state["_contact"] = ct
+        if "_n_ca" not in st.session_state:        st.session_state["_n_ca"] = len(st.session_state.ca_map.get(sel, []))
+
+        # CA fields
         for idx, wt, dl, rel in st.session_state.ca_map.get(sel, []):
-            st.session_state[f"wt{idx-1}"]  = wt
-            st.session_state[f"dl{idx-1}"]  = dl
-            st.session_state[f"rel{idx-1}"] = rel
-            # NEW: name prefill
-            nm_prefill = st.session_state.ca_names.get(sel, {}).get(idx, "")
-            st.session_state[f"nm{idx-1}"] = nm_prefill
+            i = idx - 1
+            if f"wt{i}"  not in st.session_state: st.session_state[f"wt{i}"]  = wt
+            if f"dl{i}"  not in st.session_state: st.session_state[f"dl{i}"]  = dl
+            if f"rel{i}" not in st.session_state: st.session_state[f"rel{i}"] = rel
+            if f"nm{i}"  not in st.session_state:
+                st.session_state[f"nm{i}"] = st.session_state.ca_names.get(sel, {}).get(idx, "")
 
 
 
@@ -514,7 +572,14 @@ elif st.session_state.step == 1:
             save_module_meta(name, credits, assign_pct, contact)
             save_schedule(name, sched)
 
+            if int(n_ca) > 0:
+                persist_cas(name, credits, assign_pct, ca_nms, ca_wts, ca_dls, ca_rels)
+
             st.success(f"Module '{name}' saved.")
+            st.session_state.selected = None
+            st.session_state.step = 0   # jump back to All Modules
+            st.rerun()
+
 
     if alloc_cas:
         if name not in st.session_state.modules:
@@ -522,39 +587,13 @@ elif st.session_state.step == 1:
         elif int(n_ca) == 0:
             st.warning("Set How many CAs? > 0 first.")
         else:
-            # Compute allocation
-            notional  = credits * assign_pct * 10
-            weekly    = st.session_state.baseline[name].copy()
-            prep_time = max(notional - sum(weekly[:12]), 0.0)
-            total_pct = sum(ca_wts) or 1.0
+            persist_cas(name, credits, assign_pct, ca_nms, ca_wts, ca_dls, ca_rels)
+            st.success(f"CAs allocated for '{name}'.")
+            st.session_state.selected = None
+            st.session_state.step = 0
+            st.rerun()
 
-            cas_list = []
-            for idx, (wt, dl, rel, nm) in enumerate(zip(ca_wts, ca_dls, ca_rels, ca_nms), start=1):
-                # Validate range / ordering
-                if (dl - rel) < 0 or rel < 1 or dl > 12:
-                    st.warning(f"Invalid release/deadline for CA#{idx} — skipped.")
-                    continue
 
-                # Persist CA (DB uses 4-tuple: idx, wt, dl, rel)
-                cas_list.append((idx, wt, dl, rel))
-
-                # Simple deadline-spike allocation (same as your previous behavior)
-                weekly[dl - 1] += prep_time * (wt / total_pct)
-
-                # Keep CA names (session)
-                st.session_state.ca_names.setdefault(name, {})[idx] = nm
-
-        # Enforce wk7 and weeks 13–15 = 0 in teaching allocation
-        weekly[6]   = 0
-        weekly[-3:] = [0, 0, 0]
-
-        # Save results
-        st.session_state.modules[name] = weekly
-        st.session_state.ca_map[name]  = cas_list     # <— you were missing this
-        save_cas(name, cas_list)                      # <— and this
-        save_schedule(name, weekly)
-
-        st.success(f"CAs allocated for '{name}'.")
     
 
 elif st.session_state.step == 3:
@@ -602,10 +641,12 @@ elif st.session_state.step == 3:
 
             weekly[6] = 0
             weekly[-3:] = [0, 0, 0]
+            
             for i, w in enumerate(weights):
                 week_idx = rel - 1 + i
-                if 0 <= week_idx < 12:
+                if 0 <= week_idx < 12 and week_idx != 6:  # exclude week 7
                     weekly[week_idx] += T * w
+
 
         # exam 13–15
         exam_pct = 1.0 - assign_pct

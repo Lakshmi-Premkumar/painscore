@@ -1,5 +1,6 @@
-streamlit==1.36.0
-pandas
-altair
-openpyxl
-psycopg[binary]   # Postgres driver (psycopg 3)
+streamlit==1.49.1
+pandas>=2.2
+altair>=5.0
+openpyxl>=3.1
+pg8000>=1.31
+python-dotenv>=1.0
