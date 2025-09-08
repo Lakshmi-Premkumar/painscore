@@ -32,7 +32,12 @@ st.markdown("""
 # Ensure tables exist; then load persisted meta, CA maps and schedules into memory.
 # ───────────────────────────────────────────────────────────────────────────────
 ensure_schema()
-modules_meta, cas_map_db, schedules_db = load_all()
+
+@st.cache_data(ttl=30)   # cache for 30s, adjust if needed
+def load_all_cached():
+    return load_all()
+
+modules_meta, cas_map_db, schedules_db = load_all_cached()
 
 # ───────────────────────────────────────────────────────────────────────────────
 # 2) SESSION STATE SETUP
