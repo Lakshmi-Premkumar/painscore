@@ -760,9 +760,23 @@ elif st.session_state.step == 3:
 
     # ─── Calendar summary + current “Pain score” ─────────────────────────
     st.markdown("### Calendar")
+
     base_weeks15 = recompute_all_weekly(study_style, st.session_state.meta, st.session_state.ca_map)
     base_cv = total_cv_percent(base_weeks15)
-    st.markdown(f"<p class='caption-lg'>Pain score (weeks 1–12): <b>{base_cv:.1f}%</b></p>", unsafe_allow_html=True)
+
+    # If a shift just happened, show an arrow indicating change from previous value
+    delta_html = ""
+    _last = st.session_state.pop("_last_cv_change", None)  # show once
+    if _last:
+        before, after = _last
+        arrow = "↓" if after < before else ("↑" if after > before else "→")
+        delta_html = f" <span style='opacity:.8'>&nbsp;({arrow}&nbsp;from&nbsp;{before:.1f}%)</span>"
+
+    st.markdown(
+        f"<p class='caption-lg'>Pain score (weeks 1–12): <b>{base_cv:.1f}%</b>{delta_html}</p>",
+        unsafe_allow_html=True
+    )
+
 
     # Build calendar DF and style it for visual highlighting
     cal_df = build_calendar_df(st.session_state.weeks)
@@ -844,20 +858,43 @@ elif st.session_state.step == 3:
         return styles
 
     # Render the calendar table as styled HTML (for more control than st.dataframe)
-    calendar_styled = (
-        cal_df_display.style
-        .hide(axis="index")
-        .set_table_styles([
-            {"selector":"table","props":[("table-layout","fixed"),("width","100%"),("border-collapse","collapse")]},
-            {"selector":"th","props":[("font-size","15px"),("padding","10px 8px")]},
-            {"selector":"td","props":[("font-size","14px"),("padding","12px 10px"),("line-height","1.3"),("vertical-align","top")]}
-        ], overwrite=True)
-        .set_properties(subset=pd.IndexSlice[:, ["Module"]], **{"width": f"{module_pct}%"} )
-        .set_properties(subset=pd.IndexSlice[:, week_cols],   **{"width": f"{week_pct:.4f}%"} )
-        .apply(_color_calendar, axis=0, subset=week_cols)
-        .apply(_stripe_module_col, axis=0, subset=["Module"])
-    )
-    st.markdown(f"<div class='calendar-wrap'>{calendar_styled.to_html()}</div>", unsafe_allow_html=True)
+    import hashlib, json
+
+    def _calendar_key(df_display, row_band, week_cols):
+        payload = {
+            "data": df_display.fillna("").astype(str).to_dict(orient="list"),
+            "row_band": row_band,
+            "preview": st.session_state.get("preview_overrides", {}),
+            "moves": st.session_state.get("last_applied_moves", {}),
+            "weeks": week_cols,
+        }
+        s = json.dumps(payload, sort_keys=True).encode()
+        return hashlib.sha1(s).hexdigest()
+
+    if "calendar_cache" not in st.session_state:
+        st.session_state.calendar_cache = {}
+
+    cal_key = _calendar_key(cal_df_display, row_band, week_cols)
+    html = st.session_state.calendar_cache.get(cal_key)
+
+    if html is None:
+        calendar_styled = (
+            cal_df_display.style
+            .hide(axis="index")
+            .set_table_styles([
+                {"selector":"table","props":[("table-layout","fixed"),("width","100%"),("border-collapse","collapse")]},
+                {"selector":"th","props":[("font-size","15px"),("padding","10px 8px")]},
+                {"selector":"td","props":[("font-size","14px"),("padding","12px 10px"),("line-height","1.3"),("vertical-align","top")]}
+            ], overwrite=True)
+            .set_properties(subset=pd.IndexSlice[:, ["Module"]], **{"width": f"{module_pct}%"} )
+            .set_properties(subset=pd.IndexSlice[:, week_cols],   **{"width": f"{week_pct:.4f}%"} )
+            .apply(_color_calendar, axis=0, subset=week_cols)
+            .apply(_stripe_module_col, axis=0, subset=["Module"])
+        )
+        html = calendar_styled.to_html()
+        st.session_state.calendar_cache[cal_key] = html
+
+    st.markdown(f"<div class='calendar-wrap'>{html}</div>", unsafe_allow_html=True)
     st.caption("Legend: left border colour = CV band (green/yellow/orange/red/black); pale blue = CA; deeper amber = multiple CAs; yellow (dashed) = preview move; purple = exam; grey = week 7.")
 
     # ── Recommendations UI (choose number of shifts to consider) ──
@@ -952,6 +989,7 @@ elif st.session_state.step == 3:
                     st.rerun()
 
                 # Apply: mutate ca_map deadlines, persist to DB, enable Undo
+                # Apply: mutate ca_map deadlines, persist to DB, enable Undo + show new CV
                 if c2.button("Shift now", key=f"apply_cal_{uniq}"):
                     overrides = {
                         (p.split(' CA#')[0].strip(), int(p.split(' CA#')[1].split('@')[0])):
@@ -961,7 +999,12 @@ elif st.session_state.step == 3:
                     if not overrides:
                         st.info("No changes to apply.")
                     else:
-                        # Prepare undo and record last moves
+                        # CV BEFORE
+                        cv_before = total_cv_percent(
+                            recompute_all_weekly(study_style, st.session_state.meta, st.session_state.ca_map)
+                        )
+
+                        # Prepare undo + last moves
                         undo_map, last_moves = {}, {}
                         for (m, idx), new_dl in overrides.items():
                             for (j, wt, dl, rl) in st.session_state.ca_map.get(m, []):
@@ -973,7 +1016,7 @@ elif st.session_state.step == 3:
                         st.session_state.undo_caption = row["changes"]
                         st.session_state.last_applied_moves = last_moves
 
-                        # Apply overrides to the CA map and persist
+                        # Apply overrides to CA map and persist
                         for (m, idx), new_dl in overrides.items():
                             old_list = st.session_state.ca_map.get(m, [])
                             new_list = []
@@ -984,10 +1027,20 @@ elif st.session_state.step == 3:
                             st.session_state.ca_map[m] = new_list
                             save_cas(m, new_list)
 
-                        # Clear preview and refresh
+                        # Clear preview
                         st.session_state.pop("preview_overrides", None)
-                        st.success("Shifts applied. Calendar shows old location shaded with an arrow old→new.")
+
+                        # CV AFTER
+                        cv_after = total_cv_percent(
+                            recompute_all_weekly(study_style, st.session_state.meta, st.session_state.ca_map)
+                        )
+
+                        # Stash delta so the Calendar header can show an arrow once
+                        st.session_state["_last_cv_change"] = (cv_before, cv_after)
+
+                        st.success(f"Shifts applied. New Pain score: {cv_after:.1f}% (was {cv_before:.1f}%).")
                         st.rerun()
+
     else:
         st.info("No candidate scenarios available with ±1 week shifts.")
 
