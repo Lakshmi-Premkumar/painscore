@@ -377,33 +377,38 @@ def _hashables_for_cache(meta, ca_map, overrides=None):
 
 def generate_scenarios_exact_upto_k(all_cas, Kmax, study_style, meta, ca_map, valid_fn):
     """
-    Build *candidate* scenarios where exactly k CAs are shifted (k=1..Kmax).
-    For each chosen CA, try shifting ±1 week (if valid per valid_fn).
-    Returns list of tuples: (no_shifts, CV, changes_str)
+    FAST: compute EXACTLY k = Kmax (not 1..Kmax). Try ±1 for each chosen CA.
+    Returns list[(no_shifts, CV, changes_str)].
     """
     scenarios = []
     if not all_cas or Kmax <= 0:
         return scenarios
 
+    # Prepare cacheable inputs (same helper you already have)
     meta_items, ca_map_items, _ = _hashables_for_cache(meta, ca_map, None)
 
-    for k in range(1, Kmax + 1):
-        for idxs in itertools.combinations(range(len(all_cas)), k):
-            for dirs in itertools.product([-1, 1], repeat=k):
-                overrides, changes, valid = {}, [], True
-                for pos, dir_ in zip(idxs, dirs):
-                    mod, idx, rl, dl = all_cas[pos]
-                    new_dl = dl + dir_
-                    if not valid_fn(rl, new_dl):
-                        valid = False
-                        break
-                    overrides[(mod, idx)] = new_dl
-                    changes.append(f"{mod} CA#{idx}@week {dl}→{new_dl}")
-                if not valid:
-                    continue
-                _, _, overrides_items = _hashables_for_cache(meta, ca_map, overrides)
-                weeks15 = _weeks15_cached(study_style, meta_items, ca_map_items, overrides_items)
-                scenarios.append((k, total_cv_percent(weeks15), "none" if not changes else "; ".join(changes)))
+    k = Kmax  # <-- only exactly N
+
+    for idxs in itertools.combinations(range(len(all_cas)), k):
+        for dirs in itertools.product([-1, 1], repeat=k):
+            overrides, changes, valid = {}, [], True
+            for pos, dir_ in zip(idxs, dirs):
+                mod, idx, rl, dl = all_cas[pos]
+                new_dl = dl + dir_
+                if not valid_fn(rl, new_dl):
+                    valid = False
+                    break
+                overrides[(mod, idx)] = new_dl
+                changes.append(f"{mod} CA#{idx}@week {dl}→{new_dl}")
+            if not valid:
+                continue
+
+            # Use your cached weekly recompute
+            _, _, overrides_items = _hashables_for_cache(meta, ca_map, overrides)
+            weeks15 = _weeks15_cached(study_style, meta_items, ca_map_items, overrides_items)
+            cv = total_cv_percent(weeks15)
+
+            scenarios.append((k, cv, "none" if not changes else "; ".join(changes)))     
     return scenarios
 
 # ───────────────────────────────────────────────────────────────────────────────
