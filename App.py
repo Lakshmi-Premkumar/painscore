@@ -463,7 +463,7 @@ if st.session_state.step == 0:
 # Create/edit a module; fill in meta and continuous assessments.
 # ───────────────────────────────────────────────────────────────────────────────
 elif st.session_state.step == 1:
-    st.title("Step 1 of 2: Module Definitions")
+    st.title("Module Definitions")
 
     # Pre-fill the edit form if editing existing module (only populate once)
     if st.session_state.selected and st.session_state.selected != "__new__":
@@ -617,7 +617,7 @@ elif st.session_state.step == 1:
 # ───────────────────────────────────────────────────────────────────────────────
 elif st.session_state.step == 3:
 
-    st.title("Step 2 of 2: Results")
+    st.title("Results")
     weeks = st.session_state.weeks
     teaching_weeks = weeks[:12]  # restrict to 1..12 for the Pain score metric
 
