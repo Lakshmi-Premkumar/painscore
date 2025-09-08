@@ -861,38 +861,25 @@ elif st.session_state.step == 3:
     import hashlib, json
 
     def _calendar_key(df_display, row_band, week_cols):
+        # Make preview_overrides and last_applied_moves JSON-safe
+        preview_raw = st.session_state.get("preview_overrides", {}) or {}
+        moves_raw   = st.session_state.get("last_applied_moves", {}) or {}
+
+        # stringify tuple keys like ("ELEC101", 2) -> "ELEC101::2"
+        preview_safe = {f"{m}::{i}": dl for (m, i), dl in preview_raw.items()}
+        # moves values are tuples too -> store as a small list for determinism
+        moves_safe   = {f"{m}::{i}": [old, new] for (m, i), (old, new) in moves_raw.items()}
+
         payload = {
             "data": df_display.fillna("").astype(str).to_dict(orient="list"),
-            "row_band": row_band,
-            "preview": st.session_state.get("preview_overrides", {}),
-            "moves": st.session_state.get("last_applied_moves", {}),
-            "weeks": week_cols,
+            "row_band": row_band,                # {module: "green"/...} – already JSONable
+            "preview": preview_safe,             # now JSON-safe
+            "moves": moves_safe,                 # now JSON-safe
+            "weeks": week_cols,                  # list of strings
         }
-        s = json.dumps(payload, sort_keys=True).encode()
+        s = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hashlib.sha1(s).hexdigest()
 
-    if "calendar_cache" not in st.session_state:
-        st.session_state.calendar_cache = {}
-
-    cal_key = _calendar_key(cal_df_display, row_band, week_cols)
-    html = st.session_state.calendar_cache.get(cal_key)
-
-    if html is None:
-        calendar_styled = (
-            cal_df_display.style
-            .hide(axis="index")
-            .set_table_styles([
-                {"selector":"table","props":[("table-layout","fixed"),("width","100%"),("border-collapse","collapse")]},
-                {"selector":"th","props":[("font-size","15px"),("padding","10px 8px")]},
-                {"selector":"td","props":[("font-size","14px"),("padding","12px 10px"),("line-height","1.3"),("vertical-align","top")]}
-            ], overwrite=True)
-            .set_properties(subset=pd.IndexSlice[:, ["Module"]], **{"width": f"{module_pct}%"} )
-            .set_properties(subset=pd.IndexSlice[:, week_cols],   **{"width": f"{week_pct:.4f}%"} )
-            .apply(_color_calendar, axis=0, subset=week_cols)
-            .apply(_stripe_module_col, axis=0, subset=["Module"])
-        )
-        html = calendar_styled.to_html()
-        st.session_state.calendar_cache[cal_key] = html
 
     st.markdown(f"<div class='calendar-wrap'>{html}</div>", unsafe_allow_html=True)
     st.caption("Legend: left border colour = CV band (green/yellow/orange/red/black); pale blue = CA; deeper amber = multiple CAs; yellow (dashed) = preview move; purple = exam; grey = week 7.")
