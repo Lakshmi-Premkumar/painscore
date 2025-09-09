@@ -153,3 +153,9 @@ def save_schedule(name, weekly):
             (name, json.dumps(list(weekly))),
         )
         conn.commit()
+def delete_module(name: str):
+    """Delete a module and all related rows via FK cascade."""
+    with _conn() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM modules_meta WHERE name = %s;", (name,))
+        conn.commit()

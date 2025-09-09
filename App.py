@@ -1,84 +1,83 @@
-# new code
+# Import Streamlit for the web UI
 import streamlit as st
+# Import pandas for data handling
 import pandas as pd
+# Import itertools for combinations and product operations
 import itertools
+# Import io for in-memory files (Excel buffer)
 import io
+# Import Altair for charts
 import altair as alt
+# Import Streamlit column_config (currently unused but kept)
 from streamlit import column_config
+# Import math (currently unused but kept)
 import math
+# Import os (currently unused but kept)
 import os
 
-# DB helpers (Postgres via pg8000) — create tables, read, write
+# Bring in database helper functions defined elsewhere
 from db import ensure_schema, load_all, save_module_meta, save_cas, save_schedule
 
-# Streamlit page layout
+# Set Streamlit page layout to use the full width
 st.set_page_config(layout="wide")
 
-# Small CSS tweak for the “caption-lg” utility class
+# Inject small CSS to style a larger caption class
 st.markdown("""
 <style>
   .caption-lg{
-    font-size: 1.10rem;   /* tweak as you like */
-    line-height: 1.35;
-    margin: .2rem 0 .7rem 0;
-    color: inherit;       /* respects light/dark theme */
-    opacity: .95;
+    font-size: 1.10rem;   /* larger text */
+    line-height: 1.35;    /* comfortable spacing */
+    margin: .2rem 0 .7rem 0; /* small margins */
+    color: inherit;       /* follow theme color */
+    opacity: .95;         /* slight fade */
   }
 </style>
 """, unsafe_allow_html=True)
 
-# ───────────────────────────────────────────────────────────────────────────────
-# 1) INITIAL LOAD FROM DATABASE
-# Ensure tables exist; then load persisted meta, CA maps and schedules into memory.
-# ───────────────────────────────────────────────────────────────────────────────
+# Make sure database tables exist before we query/save anything
 ensure_schema()
 
-@st.cache_data(ttl=30)   # cache for 30s, adjust if needed
+# Cache function that loads all data from the DB for 30 seconds
+@st.cache_data(ttl=30)
 def load_all_cached():
     return load_all()
 
+# Read module metadata, CA map, and schedules from the DB (with caching)
 modules_meta, cas_map_db, schedules_db = load_all_cached()
 
-# ───────────────────────────────────────────────────────────────────────────────
-# 2) SESSION STATE SETUP
-# Keep the app state across reruns (navigation step, data copies, selections, etc.)
-# ───────────────────────────────────────────────────────────────────────────────
-if 'step'     not in st.session_state: st.session_state.step     = 3   # default landing: Results
-if 'modules'  not in st.session_state: st.session_state.modules  = schedules_db.copy()
-if 'baseline' not in st.session_state: st.session_state.baseline = schedules_db.copy()
-if 'meta'     not in st.session_state: st.session_state.meta     = modules_meta.copy()
-if 'ca_map'   not in st.session_state: st.session_state.ca_map   = cas_map_db.copy()
-if 'ca_names' not in st.session_state: st.session_state.ca_names = {}   # per-module CA display names
+# Initialize Streamlit session state keys the app depends on (with defaults)
+if 'step'     not in st.session_state: st.session_state.step     = 3   # which screen to show (default to Results)
+if 'modules'  not in st.session_state: st.session_state.modules  = schedules_db.copy()  # working schedules
+if 'baseline' not in st.session_state: st.session_state.baseline = schedules_db.copy()  # original schedules
+if 'meta'     not in st.session_state: st.session_state.meta     = modules_meta.copy()  # module info
+if 'ca_map'   not in st.session_state: st.session_state.ca_map   = cas_map_db.copy()    # CA definitions
+if 'ca_names' not in st.session_state: st.session_state.ca_names = {}   # display names per CA per module
 if 'weeks'    not in st.session_state:
-    st.session_state.weeks = [f"week {i}" for i in range(1,16)]
+    st.session_state.weeks = [f"week {i}" for i in range(1,16)]  # labels week 1..15
 if 'selected' not in st.session_state:
-    st.session_state.selected = None                    # which module is being edited
+    st.session_state.selected = None  # which module is being edited (if any)
 if 'selected_modules' not in st.session_state:
-    st.session_state.selected_modules = []              # (unused here, but reserved)         
+    st.session_state.selected_modules = []  # reserved for future use
 
 if 'selected_ca_map' not in st.session_state:
-    st.session_state.selected_ca_map = {}               # (unused here, but reserved)        
+    st.session_state.selected_ca_map = {}   # reserved for future use
 if 'heatmap_modules' not in st.session_state:
-    st.session_state.heatmap_modules = None             # selection for heatmap view
+    st.session_state.heatmap_modules = None # selection for heatmap page
 if 'last_applied_moves' not in st.session_state:
-    # record of last “Shift now”: {(module, ca_index): (old_deadline, new_deadline)}
-    st.session_state.last_applied_moves = {}
+    st.session_state.last_applied_moves = {}  # remember the last applied CA shifts
 
-# Support undo of the last applied move set
+# Prepare undo storage for the last batch of shifts
 if 'undo_payload' not in st.session_state:
-    st.session_state.undo_payload = None   # {(module, ca_index): old_deadline}
+    st.session_state.undo_payload = None   # map of (module, ca_idx) -> old_deadline
 if 'undo_caption' not in st.session_state:
-    st.session_state.undo_caption = ""     # human-readable summary of last move set
+    st.session_state.undo_caption = ""     # human-readable summary of last shifts
 
-# ───────────────────────────────────────────────────────────────────────────────
-# 3) SIDEBAR NAVIGATION
-# Radio switches the app "step" between list, setup, results and heatmaps.
-# ───────────────────────────────────────────────────────────────────────────────
+# Build the sidebar navigation
 with st.sidebar:
-    st.header("Navigate")
-    nav_items = ["Results", "Modules", "Module setup", "Heatmaps (all pairs)"]
+    st.header("Navigate")  # section title
+    nav_items = ["Results", "Modules", "Module setup", "Heatmaps (all pairs)"]  # menu items
 
-    # Select default based on current step
+    # Figure out which sidebar item should be preselected based on current step
     default_choice = (
         "Modules"              if st.session_state.step == 0 else
         "Module setup"         if st.session_state.step == 1 else
@@ -86,6 +85,7 @@ with st.sidebar:
         "Results"
     )
 
+    # Radio buttons to switch pages
     choice = st.radio(
         "Go to",
         nav_items,
@@ -94,7 +94,7 @@ with st.sidebar:
         key="nav_choice",
     )
 
-# Map chosen nav to internal step value
+# Translate sidebar choice into an internal step value
 if choice == "Results":
     st.session_state.step = 3
 elif choice == "Modules":
@@ -105,43 +105,57 @@ elif choice == "Heatmaps (all pairs)":
     st.session_state.heatmap_modules = "__ALL__"
     st.session_state.step = "HEATMAP"
 
-# ───────────────────────────────────────────────────────────────────────────────
-# 4) HELPER FUNCTIONS
-# Colour bands, statistics, transitions between steps, CA table helpers, etc.
-# ───────────────────────────────────────────────────────────────────────────────
+# ---------- Helper functions ----------
+
+# Return a simple color band name for a CV% value
 def colour_for_cv(cv: float) -> str:
     """
-    Map a CV-like metric to colour bands used across the UI.
-    Returned string names are later mapped to hex colours.
+    Map a CV-like metric to a band name.
     """
-    if cv < 30:         return "green"
-    elif cv < 40:       return "yellow"
-    elif cv < 50:       return "orange"
-    elif cv < 65:       return "red"
+    if cv < 92:         return "green"
+    elif cv < 102:      return "yellow"
+    elif cv < 112:      return "orange"
+    elif cv < 120:      return "red"
     else:               return "black"
 
+# Return an HTML-styled badge for a CV value with color coding
+def cv_badge(cv: float, label: str) -> str:
+    """Create a colored badge that shows a label and a CV%."""
+    band = colour_for_cv(cv)  # map cv to band
+    hexmap = {"green":"#2ecc71","yellow":"#f1c40f","orange":"#e67e22","red":"#e74c3c","black":"#000000"}
+    bg = hexmap.get(band, "#2ecc71")  # background color
+    fg = "#111111" if band != "black" else "#ffffff"  # text color
+    return (
+        f"<span style='display:inline-block;padding:6px 10px;"
+        f"border-radius:8px;background:{bg};color:{fg};font-weight:600;"
+        f"margin-right:8px;border:1px solid rgba(0,0,0,.08)'>"
+        f"{label}: {cv:.1f}%</span>"
+    )
+
+# (Unused helper) Convert CV to a 0..1 range variant
 def normalize_cv(ser):
     """
     Normalize coefficient of variation: CV / (1 + CV).
-    Used if you want a bounded version; not heavily used in this file.
     """
     raw = ser.std(ddof=0) / ser.mean()
     return raw / (1 + raw)
 
+# Move to next step
 def go_next(): st.session_state.step += 1
+# Move to previous step
 def go_prev(): st.session_state.step -= 1
+# Go back to module list and clear selection
 def go_home():
-    """Return to Modules list and clear any active selection."""
     st.session_state.step = 0
     st.session_state.selected = None
 
+# Build a table of CA rows for a module (1..12 deadlines only)
 def ca_df(mod):
     """
-    Build a small dataframe of CA rows for a given module.
-    Filters to deadlines within weeks 1..12 (teaching weeks).
+    Return a dataframe with CA details for a given module.
     """
     cas = st.session_state.ca_map.get(mod, [])
-    name_map = st.session_state.ca_names.get(mod, {})  # {idx: name}
+    name_map = st.session_state.ca_names.get(mod, {})
     rows = [
         {
             "CA#": idx,
@@ -155,214 +169,196 @@ def ca_df(mod):
     ]
     return pd.DataFrame(rows)
 
+# Return the set of weeks (1..12) where the module has CA deadlines
 def deadline_set(mod):
-    """Return a set of deadline weeks (1..12) used by the module’s CAs."""
     cas = st.session_state.ca_map.get(mod, [])
     return {dl for (_idx, _wt, dl, _rl) in cas if 1 <= dl <= 12}
 
-# ---------- Heatmap & Calendar helpers ----------
+# Build the calendar-like dataframe used for the main “Calendar” view
 def build_calendar_df(weeks_labels=None, overrides=None, moves=None):
     """
-    Build a spreadsheet-like calendar:
-      - Rows are modules.
-      - Columns are weeks 1..15.
-      - Cells list CA name and weight at the CA *deadline* week.
-    Supports “preview” overrides (yellow dashed) and “applied” moves (blue boxes).
+    Create a table: rows=modules, cols=weeks; cells list CA names at their deadline week.
+    Also annotate preview moves and last-applied moves.
     """
-    weeks_labels = weeks_labels or st.session_state.weeks
-    overrides = overrides or st.session_state.get("preview_overrides", {})
-    moves = moves or st.session_state.get("last_applied_moves", {})
-    n_weeks = len(weeks_labels)
-    table = {mod: [""] * n_weeks for mod in st.session_state.meta.keys()}
+    weeks_labels = weeks_labels or st.session_state.weeks  # column labels
+    overrides = overrides or st.session_state.get("preview_overrides", {})  # preview position changes
+    moves = moves or st.session_state.get("last_applied_moves", {})         # applied changes (old→new)
+    n_weeks = len(weeks_labels)  # number of columns
+    table = {mod: [""] * n_weeks for mod in st.session_state.meta.keys()}  # start empty cells
 
+    # Fill CA labels into the right week cells
     for mod, cas_list in st.session_state.ca_map.items():
         name_map = st.session_state.ca_names.get(mod, {})
         for (idx, wt, dl, rl) in cas_list:
             if 1 <= dl <= 12:
-                final_dl = overrides.get((mod, idx), dl)   # if previewing, move cell label
-                moved_pair = moves.get((mod, idx))         # annotate last-applied shift
+                final_dl = overrides.get((mod, idx), dl)   # use override deadline if previewing
+                moved_pair = moves.get((mod, idx))         # (old_dl, new_dl) if just applied
 
-                label = name_map.get(idx, f"CA #{idx}")
+                label = name_map.get(idx, f"CA #{idx}")    # show display name if available
                 try:
-                    pct = f"({float(wt):.0f}%)" if wt not in (None, 0) else ""
+                    pct = f"({float(wt):.0f}%)" if wt not in (None, 0) else ""  # weight like "(20%)"
                 except Exception:
                     pct = f"({wt}%)" if wt not in (None, 0) else ""
-                base_text = f"{label} {pct}".strip()
+                base_text = f"{label} {pct}".strip()       # final cell text
 
-                # If the last-applied move is still reflected in the data, mark old cell and new cell
+                # If this CA was just moved and data still reflects it, show old and new places
                 if moved_pair:
                     old_dl, new_dl = moved_pair
                     if dl == new_dl:
-                        # show a ghost label in the old position
                         old_idx = old_dl - 1
-                        ghost = f"[moved_from] {base_text} → {new_dl}"
+                        ghost = f"[moved_from] {base_text} → {new_dl}"  # ghost marker at old cell
                         prev_old = table[mod][old_idx]
                         table[mod][old_idx] = (prev_old + "\n" if prev_old else "") + ghost
-                        # and annotate the current (new) cell
-                        text = f"{base_text} [{old_dl}→{new_dl}]"
+                        text = f"{base_text} [{old_dl}→{new_dl}]"       # annotate current cell
                     else:
-                        # if user undid later, do nothing special
-                        text = base_text
-                # If only previewing, show yellow dashed state
+                        text = base_text  # if undone later, just show plain text
+                # If only previewing, show dashed/yellow style via a tag
                 elif final_dl != dl:
-                    text = f"{base_text} → {final_dl}"
+                    text = f"{base_text} → {final_dl}"  # show arrow to preview week
                     prev_old = table[mod][dl - 1]
-                    ghost = f"[preview_from] {base_text} → {final_dl}"
+                    ghost = f"[preview_from] {base_text} → {final_dl}"  # preview marker at old cell
                     table[mod][dl - 1] = (prev_old + "\n" if prev_old else "") + ghost
                 else:
-                    text = base_text
+                    text = base_text  # no change
 
-                # put label in the (possibly overridden) deadline cell
+                # Place the label into the final (possibly overridden) deadline column
                 col_idx = final_dl - 1
                 prev = table[mod][col_idx]
                 table[mod][col_idx] = (prev + "\n" if prev else "") + text
 
-    # Add exam percentage to week 15 (if module has exam share)
+    # Add exam info to week 15 if the module has an exam share
     if "week 15" in weeks_labels:
         idx15 = weeks_labels.index("week 15")
         for mod, (_credits, assign_pct, _contact) in st.session_state.meta.items():
-            exam_pct = max(0.0, (1.0 - float(assign_pct)) * 100.0)
+            exam_pct = max(0.0, (1.0 - float(assign_pct)) * 100.0)  # exam percentage of total
             if exam_pct > 0:
                 prev = table[mod][idx15]
                 table[mod][idx15] = (prev + "\n" if prev else "") + f"Exam ({exam_pct:.0f}%)"
 
+    # Convert dict-of-lists to a dataframe and set index name
     df = pd.DataFrame.from_dict(table, orient="index", columns=weeks_labels)
     df.index.name = "Module"
     return df
 
+# Compute weight distribution across a span (release..deadline) for a given style
 def _weights_for_span(d: int, style: str):
     """
-    Create a distribution of weights across (deadline - release) inclusive.
-    This models how work is spread across the span based on study style.
+    Return a list of weights for (d+1) weeks based on study style.
     """
     if d < 0:
         return []
     if style == "Early Starter":
-        # flat split across span
-        return [1/(d+1)] * (d+1)
+        return [1/(d+1)] * (d+1)  # equal weights
     if style == "Steady":
-        # ramp-up weights (2*(i+1) / (d^2+3d+2))
-        denom = (d**2 + 3*d + 2) or 1
-        return [2*(i+1)/denom for i in range(d+1)]
+        denom = (d**2 + 3*d + 2) or 1  # safe denominator
+        return [2*(i+1)/denom for i in range(d+1)]  # ramp up towards deadline
     if style == "Just in Time":
-        # all weight at deadline
-        return [0]*d + [1]
-    # fallback
-    return [1/(d+1)] * (d+1)
+        return [0]*d + [1]  # all work at the deadline week
+    return [1/(d+1)] * (d+1)  # fallback equal split
 
+# Build weekly hour allocations for every module (15 weeks), optionally with deadline overrides
 def recompute_all_weekly(study_style: str,
                          meta: dict,
                          ca_map: dict,
                          deadline_overrides: dict | None = None) -> dict:
     """
-    Build 15-week hour allocations for every module, applying optional overrides:
-      * meta:   module -> (credits, assignment_pct, contact_hours_per_week)
-      * ca_map: module -> list of (idx, weight%, deadline, release)
-      * deadline_overrides: {(module, ca_idx) -> new_deadline}
-    Returns dict: module -> [week1..week15 hours]
+    Return dict of module -> list of 15 weekly hours, applying optional deadline overrides.
     """
-    deadline_overrides = deadline_overrides or {}
-    weeks15_by_mod = {}
+    deadline_overrides = deadline_overrides or {}  # default: no overrides
+    weeks15_by_mod = {}  # result store
 
     for mod in meta:
-        credits, assign_pct, contact = meta[mod]
-        total_notional = credits * 10
+        credits, assign_pct, contact = meta[mod]  # unpack module meta
+        total_notional = credits * 10             # total hours for the module
 
-        # Baseline teaching hours: 1–6 contact, 7 = 0 (reading), 8–12 contact, 13–15 initially 0
+        # Start with contact hours in teaching weeks; week 7 = 0; weeks 13..15 start at 0
         weekly = [contact]*6 + [0] + [contact]*5 + [0, 0, 0]
 
-        # Coursework effort still to allocate within 1..12 (excluding week 7)
+        # Remaining coursework hours to spread across 1..12 (ignoring week 7)
         prep_time = max(total_notional * assign_pct - sum(weekly[:12]), 0.0)
 
-        ca_list = ca_map.get(mod, [])
-        total_pct = sum(w for (_idx, w, _dl, _rl) in ca_list) or 1.0
+        ca_list = ca_map.get(mod, [])             # CAs for this module
+        total_pct = sum(w for (_idx, w, _dl, _rl) in ca_list) or 1.0  # sum of CA weights
 
         for (idx, wt, dl, rl) in ca_list:
-            # apply temporary (preview) or applied override to deadline if any
-            dl = deadline_overrides.get((mod, idx), dl)
+            dl = deadline_overrides.get((mod, idx), dl)  # override deadline if provided
 
-            d = dl - rl
+            d = dl - rl  # span length (inclusive count is d+1)
             if d < 0 or rl < 1 or dl > 12:
-                # skip invalid spans or out-of-teaching-range deadlines
-                continue
+                continue  # skip invalid spans or deadlines outside 1..12
 
-            T = prep_time * (wt / total_pct)
-            weights = _weights_for_span(d, study_style)
+            T = prep_time * (wt / total_pct)  # hours to allocate for this CA
+            weights = _weights_for_span(d, study_style)  # distribution across the span
 
-            # enforce special weeks: no teaching in 7, exam weeks separated
+            # Ensure week 7 is zero and exam weeks are handled separately
             weekly[6] = 0
             weekly[-3:] = [0, 0, 0]
 
-            # add distributed CA work into weeks 1..12 (excluding week 7)
+            # Add CA effort into weeks 1..12, skipping week 7
             for i, w in enumerate(weights):
                 week_idx = rl - 1 + i
                 if 0 <= week_idx < 12 and week_idx != 6:
                     weekly[week_idx] += T * w
 
-        # Spread exam effort across weeks 13..15 (based on exam share)
+        # Distribute exam effort over weeks 13..15
         exam_pct = 1.0 - assign_pct
         exam_effort = total_notional * exam_pct
-        d_exam = 2  # (15 - 13)
+        d_exam = 2  # span for weeks 13..15
         exam_w = _weights_for_span(d_exam, study_style)
         for i, w in enumerate(exam_w):
             weekly[12 + i] += exam_effort * w
 
+        # Store the computed 15-week profile
         weeks15_by_mod[mod] = weekly
 
     return weeks15_by_mod
 
+# Compute overall CV% across total hours in weeks 1..12 (ignoring week 7)
 def total_cv_percent(weeks15_by_mod: dict) -> float:
     """
-    Compute “CV%” across TOTAL hours for weeks 1..12 (ignoring week 7).
-    This is the app’s “Pain score” metric (higher = more uneven workload).
+    Return CV% for the sum of hours per week over weeks 1..12.
     """
-    totals = [0.0]*12
+    totals = [0.0]*12  # total hours per week across all modules
     for weekly in weeks15_by_mod.values():
         for i in range(12):
             totals[i] += weekly[i]
     mean = sum(totals)/12 if totals else 0.0
     if mean == 0:
         return 0.0
-    # population variance/std, then CV% = std/mean * 100
-    var = sum((x - mean)**2 for x in totals) / 12
+    var = sum((x - mean)**2 for x in totals) / 12  # population variance
     std = var ** 0.5
-    return (std / mean) * 100.0
+    return (std / mean) * 100.0  # CV% = std/mean*100
 
+# Save/replace a module's CA list, update session, and persist to DB
 def persist_cas(name, credits, assign_pct, ca_nms, ca_wts, ca_dls, ca_rels):
     """
-    Save/replace a module’s CA definitions:
-      * Validates release <= deadline <= 12.
-      * Updates in-memory session structures.
-      * Persists CA list and schedule to DB.
+    Validate CA rows, update state, and write to DB for a module.
     """
-    notional  = credits * assign_pct * 10
-    weekly    = st.session_state.baseline[name].copy()
-    prep_time = max(notional - sum(weekly[:12]), 0.0)
-    total_pct = sum(ca_wts) or 1.0
+    notional  = credits * assign_pct * 10                  # coursework hours
+    weekly    = st.session_state.baseline[name].copy()     # start from baseline
+    prep_time = max(notional - sum(weekly[:12]), 0.0)      # to allocate across 1..12
+    total_pct = sum(ca_wts) or 1.0                         # sum of CA weights
 
-    cas_list = []
+    cas_list = []  # will hold (idx, wt, dl, rel)
     for idx, (wt, dl, rel, nm) in enumerate(zip(ca_wts, ca_dls, ca_rels, ca_nms), start=1):
         if (dl - rel) < 0 or rel < 1 or dl > 12:
             st.warning(f"Invalid release/deadline for CA#{idx} — skipped.")
             continue
-        cas_list.append((idx, wt, dl, rel))
-        weekly[dl - 1] += prep_time * (wt / total_pct)
-        st.session_state.ca_names.setdefault(name, {})[idx] = nm
+        cas_list.append((idx, wt, dl, rel))                # store CA row
+        weekly[dl - 1] += prep_time * (wt / total_pct)     # add CA chunk at deadline
+        st.session_state.ca_names.setdefault(name, {})[idx] = nm  # save display name
 
-    # Enforce week 7 = 0 and exam weeks separate
+    # Zero week 7 and keep exam separate in 13..15
     weekly[6]   = 0
     weekly[-3:] = [0, 0, 0]
 
-    # Update session & persist to DB
+    # Update session state and persist to DB
     st.session_state.modules[name] = weekly
     st.session_state.ca_map[name]  = cas_list
     save_cas(name, cas_list)
     save_schedule(name, weekly)
 
-# ───────────────────────────────────────────────────────────────────────────────
-# 5) CACHE LAYER FOR SCENARIOS
-# Memoize recomputation for speed; scenario generator tries ±1 week shifts.
-# ───────────────────────────────────────────────────────────────────────────────
+# Cache wrapper for weekly recomputation to speed up scenario testing
 @st.cache_data(show_spinner=False)
 def _weeks15_cached(study_style, meta_items, ca_map_items, overrides_items):
     """Cached call to recompute_all_weekly with hashable inputs."""
@@ -371,28 +367,29 @@ def _weeks15_cached(study_style, meta_items, ca_map_items, overrides_items):
     overrides = dict(overrides_items) if overrides_items else None
     return recompute_all_weekly(study_style, meta, ca_map, overrides)
 
+# Convert dicts to tuples so they can be used as cache keys
 def _hashables_for_cache(meta, ca_map, overrides=None):
     """
-    Convert dicts to sorted tuples so cache keys are stable & hashable.
+    Turn dicts into sorted tuples so they are hashable for caching.
     """
     meta_items = tuple(sorted((k, tuple(v)) for k, v in meta.items()))
     ca_map_items = tuple(sorted((k, tuple(tuple(x) for x in v)) for k, v in ca_map.items()))
     overrides_items = tuple(sorted(overrides.items())) if overrides else None
     return meta_items, ca_map_items, overrides_items
 
+# Try all combinations of exactly Kmax CA shifts (±1 week) and compute CVs
 def generate_scenarios_exact_upto_k(all_cas, Kmax, study_style, meta, ca_map, valid_fn):
     """
-    FAST: compute EXACTLY k = Kmax (not 1..Kmax). Try ±1 for each chosen CA.
-    Returns list[(no_shifts, CV, changes_str)].
+    Return list of scenarios with exactly Kmax shifts: (k, cv, description).
     """
     scenarios = []
     if not all_cas or Kmax <= 0:
         return scenarios
 
-    # Prepare cacheable inputs (same helper you already have)
+    # Prepare cacheable inputs once
     meta_items, ca_map_items, _ = _hashables_for_cache(meta, ca_map, None)
 
-    k = Kmax  # <-- only exactly N
+    k = Kmax  # we only do “exactly Kmax”
 
     for idxs in itertools.combinations(range(len(all_cas)), k):
         for dirs in itertools.product([-1, 1], repeat=k):
@@ -400,64 +397,59 @@ def generate_scenarios_exact_upto_k(all_cas, Kmax, study_style, meta, ca_map, va
             for pos, dir_ in zip(idxs, dirs):
                 mod, idx, rl, dl = all_cas[pos]
                 new_dl = dl + dir_
-                if not valid_fn(rl, new_dl):
+                if not valid_fn(rl, new_dl):  # skip illegal shifts
                     valid = False
                     break
-                overrides[(mod, idx)] = new_dl
-                changes.append(f"{mod} CA#{idx}@week {dl}→{new_dl}")
+                overrides[(mod, idx)] = new_dl  # collect override
+                changes.append(f"{mod} CA#{idx}@week {dl}→{new_dl}")  # human text
             if not valid:
                 continue
 
-            # Use your cached weekly recompute
+            # Use cached recompute for speed
             _, _, overrides_items = _hashables_for_cache(meta, ca_map, overrides)
             weeks15 = _weeks15_cached(study_style, meta_items, ca_map_items, overrides_items)
             cv = total_cv_percent(weeks15)
 
-            scenarios.append((k, cv, "none" if not changes else "; ".join(changes)))     
+            scenarios.append((k, cv, "none" if not changes else "; ".join(changes)))
     return scenarios
 
-# ───────────────────────────────────────────────────────────────────────────────
-# Redirect any legacy “step 2” to the Results page (step 3)
-# ───────────────────────────────────────────────────────────────────────────────
+# If old code set step==2, redirect it to the Results page
 if st.session_state.step == 2:
     st.session_state.step = 3
     st.rerun()
 
-# ───────────────────────────────────────────────────────────────────────────────
-# 6) STEP 0 — MASTER LIST OF MODULES
-# Show existing modules (from DB), allow adding a new one or editing.
-# ───────────────────────────────────────────────────────────────────────────────
+# ---------- STEP 0: list of modules (view, add, edit, delete) ----------
 if st.session_state.step == 0:
-    st.title("All Modules")
-    c1, c2 = st.columns([3,1])
+    st.title("All Modules")  # page title
+    c1, c2 = st.columns([3,1])  # layout columns
     with c2:
-        # Start a new module setup
+        # Button to start creating a new module
         if st.button("➕ Add New Module"):
-            st.session_state.selected = "__new__"
-            st.session_state["_name"] = ""
+            st.session_state.selected = "__new__"  # mark as new
+            st.session_state["_name"] = ""         # clear fields
             st.session_state["_credits"] = 0.0
             st.session_state["_assign_pct"] = 0.0
             st.session_state["_contact"] = 0.0
             st.session_state["_n_ca"] = 0
-            # Clear any leftover CA inputs from previous sessions
+            # Remove any leftover CA form values from earlier edits
             for k in list(st.session_state.keys()):
                 if k.startswith(("wt","dl","rel","nm")):
                     del st.session_state[k]
-            st.session_state.step = 1
+            st.session_state.step = 1  # go to module setup
             st.rerun()
 
-    # List modules with summary and “Edit” action
+    # Show each module with summary and actions
     for mod in st.session_state.meta:
         with st.expander(mod):
-            cr, ap, ct = st.session_state.meta[mod]  # credits, assignment %, contact hrs/wk
-            exam_pct = 1.0 - ap
+            cr, ap, ct = st.session_state.meta[mod]  # unpack
+            exam_pct = 1.0 - ap                      # exam share
             st.markdown(
                 f"**Credits:** {cr}  •  "
                 f"**CW %:** {ap*100:.0f}%  •  "
                 f"**Exam %:** {exam_pct*100:.0f}%  •  "
                 f"**Contact:** {ct}h/wk"
             )
-            # Edit kicks to Step 1 with prefilled fields
+            # Edit button opens the setup form prefilled
             if st.button("✏️ Edit", key=f"edit_{mod}"):
                 for k in list(st.session_state.keys()):
                     if k.startswith(("wt", "dl", "rel", "nm")) or k in {"_name","_credits","_assign_pct","_contact","_n_ca"}:
@@ -466,28 +458,38 @@ if st.session_state.step == 0:
                 st.session_state.step = 1
                 st.rerun()
 
+            # Delete button removes from DB and session
+            if st.button("🗑️ Delete", key=f"delete_{mod}"):
+                from db import delete_module
+                delete_module(mod)
+                # Remove from session_state too
+                st.session_state.meta.pop(mod, None)
+                st.session_state.ca_map.pop(mod, None)
+                st.session_state.modules.pop(mod, None)
+                st.session_state.baseline.pop(mod, None)
+                st.success(f"Module '{mod}' deleted.")
+                st.rerun()
+
+    # Helper text when nothing selected
     st.write("Click ‘Add New Module’ or ‘Edit’ to begin.")
 
-# ───────────────────────────────────────────────────────────────────────────────
-# 7) STEP 1 — MODULE DEFINITIONS + CAs
-# Create/edit a module; fill in meta and continuous assessments.
-# ───────────────────────────────────────────────────────────────────────────────
+# ---------- STEP 1: module definition and CA entry ----------
 elif st.session_state.step == 1:
-    st.title("Module Definitions")
+    st.title("Module Definitions")  # page title
 
-    # Pre-fill the edit form if editing existing module (only populate once)
+    # If editing an existing module, prefill form fields once
     if st.session_state.selected and st.session_state.selected != "__new__":
         sel = st.session_state.selected
         cr, ap, ct = st.session_state.meta[sel]
 
-        # top-level module fields (stored in session under underscored names)
+        # Basic module fields
         if "_name" not in st.session_state:        st.session_state["_name"] = sel
         if "_credits" not in st.session_state:     st.session_state["_credits"] = cr
         if "_assign_pct" not in st.session_state:  st.session_state["_assign_pct"] = ap * 100
         if "_contact" not in st.session_state:     st.session_state["_contact"] = ct
         if "_n_ca" not in st.session_state:        st.session_state["_n_ca"] = len(st.session_state.ca_map.get(sel, []))
 
-        # CA fields (persisted as wtN, dlN, relN, nmN)
+        # CA fields (one set per CA)
         for idx, wt, dl, rel in st.session_state.ca_map.get(sel, []):
             i = idx - 1
             if f"wt{i}"  not in st.session_state: st.session_state[f"wt{i}"]  = wt
@@ -496,17 +498,17 @@ elif st.session_state.step == 1:
             if f"nm{i}"  not in st.session_state:
                 st.session_state[f"nm{i}"] = st.session_state.ca_names.get(sel, {}).get(idx, "")
 
-    # Main module form
+    # Build the module form
     with st.form("module_form"):
-        name       = st.text_input("Module name", value=st.session_state.get("_name",""))
+        name       = st.text_input("Module name", value=st.session_state.get("_name",""))  # module name
         credits    = st.number_input("Credits", min_value=0.0, step=0.5,
-                                     value=st.session_state.get("_credits",0.0))
-        # Legacy field kept; you also expose CW% / Exam% below and then overwrite this
+                                     value=st.session_state.get("_credits",0.0))          # credits value
+        # This is kept for backward compatibility, but we soon mirror it to CW%
         assign_pct = st.number_input("Assignment % of total hours",
                                      min_value=0.0, max_value=100.0,
                                      value=st.session_state.get("_assign_pct",0.0))/100.0
         
-        # Coursework vs Exam — user-facing sliders; assigns cw_pct back to assign_pct
+        # Two paired inputs to show CW% and derived Exam%
         colA, colB = st.columns(2)
         with colA:
             cw_pct = st.number_input(
@@ -521,28 +523,28 @@ elif st.session_state.step == 1:
                 value=int((1 - cw_pct) * 100),
                 disabled=True
             )
-        assign_pct = cw_pct  # overwrite with the intended value from the paired inputs
+        assign_pct = cw_pct  # store back the CW% as the assignment proportion
 
         contact    = st.number_input("Contact hrs/week",
                                      min_value=0.0, step=0.5,
-                                     value=st.session_state.get("_contact",0.0))
+                                     value=st.session_state.get("_contact",0.0))  # teaching hours per week
 
         n_ca = st.number_input("How many CAs?", min_value=0, step=1,
-                               value=st.session_state.get("_n_ca",0))
+                               value=st.session_state.get("_n_ca",0))  # number of CA rows
         
-        # Collect CA inputs
+        # Lists to collect CA inputs from the form
         ca_nms, ca_wts, ca_dls, ca_rels = [], [], [], []
 
+        # If there are CAs, draw the inputs for each
         if n_ca > 0:
             st.subheader("Continuous Assessments")
             for i in range(int(n_ca)):
-                # CA name (optional)
-                nm = st.text_input(
+                nm = st.text_input(  # CA display name
                     f"Name for CA #{i+1}",
                     key=f"nm{i}",
                     value=st.session_state.get(f"nm{i}", "")
                 )
-                c1, c2, c3 = st.columns([2, 1, 1])
+                c1, c2, c3 = st.columns([2, 1, 1])  # weight, deadline, release
                 with c1:
                     w = st.number_input(
                         f"Weight % for CA #{i+1}",
@@ -564,52 +566,54 @@ elif st.session_state.step == 1:
                         key=f"rel{i}",
                         value=st.session_state.get(f"rel{i}", 1)
                     )
+                # Push values to lists
                 ca_nms.append(nm); ca_wts.append(w); ca_dls.append(d); ca_rels.append(r)
 
-        # Form submit buttons
+        # Three form buttons: back, save/update, allocate CAs
         b1, b2, b3 = st.columns(3)
         with b1: back = st.form_submit_button("◀ Back to list")
         with b2: save_mod = st.form_submit_button("Save / Update Module")
         with b3: alloc_cas = st.form_submit_button("Allocate CAs")
 
-    # Normalize booleans if not created (streamlit re-run guard)
+    # Ensure booleans exist after form submit (Streamlit rerun safety)
     back = bool(back) if 'back' in locals() else False
     save_mod = bool(save_mod) if 'save_mod' in locals() else False
     alloc_cas = bool(alloc_cas) if 'alloc_cas' in locals() else False
 
+    # Back button: return to list without saving anything
     if back:
-        # Return to module list without saving
         go_home()
         st.stop()
 
+    # Save button: persist module meta and optional CA rows
     if save_mod:
-        # Save the module meta (and baseline schedule) to DB
         if not name:
             st.error("Module name is required.")
         else:
-            # Build baseline schedule: contact hours; week 7 = 0; 13–15 = 0 here
+            # Build baseline schedule with contact hours and zeros where needed
             sched = [contact]*6 + [0] + [contact]*5 + [0, 0, 0]
 
-            # Update session
+            # Update session with baseline and meta
             st.session_state.baseline[name] = sched.copy()
             st.session_state.modules[name]  = sched.copy()
             st.session_state.meta[name]     = (credits, assign_pct, contact)
 
-            # Persist meta + schedule
+            # Write meta and schedule to DB
             save_module_meta(name, credits, assign_pct, contact)
             save_schedule(name, sched)
 
-            # If CA rows were entered, persist them too
+            # If CA inputs exist, persist them too
             if int(n_ca) > 0:
                 persist_cas(name, credits, assign_pct, ca_nms, ca_wts, ca_dls, ca_rels)
 
+            # Notify and go back to module list
             st.success(f"Module '{name}' saved.")
             st.session_state.selected = None
-            st.session_state.step = 0   # go back to module list
+            st.session_state.step = 0
             st.rerun()
 
+    # Allocate CAs button: overwrite CAs for an already-saved module
     if alloc_cas:
-        # Allow allocating/overwriting CAs for an already-saved module
         if name not in st.session_state.modules:
             st.error("Please Save module first.")
         elif int(n_ca) == 0:
@@ -621,17 +625,14 @@ elif st.session_state.step == 1:
             st.session_state.step = 0
             st.rerun()
 
-# ───────────────────────────────────────────────────────────────────────────────
-# 8) STEP 3 — RESULTS
-# Compute workloads, show table/chart + recommendations + calendar.
-# ───────────────────────────────────────────────────────────────────────────────
+# ---------- STEP 3: results (workload table, scenarios, calendar, chart) ----------
 elif st.session_state.step == 3:
 
-    st.title("Results")
-    weeks = st.session_state.weeks
-    teaching_weeks = weeks[:12]  # restrict to 1..12 for the Pain score metric
+    st.title("Results")  # page title
+    weeks = st.session_state.weeks  # all 15 week labels
+    teaching_weeks = weeks[:12]     # consider 1..12 for CV calculation
 
-    # Study Style selector controls how CA work is distributed across release..deadline
+    # Dropdown to choose the study style used for allocation
     study_style = st.selectbox(
         "Study Style",
         ["Early Starter", "Steady", "Just in Time"],
@@ -639,28 +640,28 @@ elif st.session_state.step == 3:
             st.session_state.get("study_style", "Just in Time")
         )
     )
-    st.session_state["study_style"] = study_style
+    st.session_state["study_style"] = study_style  # remember choice
     st.caption("This controls how effort is distributed from CA release to deadline during allocation.")
 
-    # Recompute module-by-module weekly workload based on the study style
+    # Recompute weekly workloads per module using the selected study style
     df_rows = {}
     for mod in st.session_state.meta:
         credits, assign_pct, contact = st.session_state.meta[mod]
-        baseline = [contact]*6 + [0] + [contact]*5 + [0, 0, 0]
-        weekly = baseline.copy()
-        total_notional = credits * 10
-        prep_time = max(total_notional * assign_pct - sum(weekly[:12]), 0.0)
+        baseline = [contact]*6 + [0] + [contact]*5 + [0, 0, 0]  # base teaching pattern
+        weekly = baseline.copy()                                # mutable list
+        total_notional = credits * 10                           # total hours
+        prep_time = max(total_notional * assign_pct - sum(weekly[:12]), 0.0)  # CA hours to allocate
 
-        ca_list = st.session_state.ca_map.get(mod, [])
-        total_pct = sum(w for (_, w, _, _) in ca_list) or 1.0
+        ca_list = st.session_state.ca_map.get(mod, [])          # CA definitions
+        total_pct = sum(w for (_, w, _, _) in ca_list) or 1.0   # sum CA weights
 
         for idx, wt, dl, rel in ca_list:
-            T = prep_time * (wt / total_pct)
-            d = dl - rel
+            T = prep_time * (wt / total_pct)                    # hours for this CA
+            d = dl - rel                                        # span
             if d < 0 or rel < 1 or dl > 12:
                 continue
 
-            # Distribute work across release..deadline per chosen style
+            # Pick weights by style
             if study_style == "Early Starter":
                 weights = [1 / (d + 1)] * (d + 1)
             elif study_style == "Steady":
@@ -669,15 +670,16 @@ elif st.session_state.step == 3:
             else:
                 weights = [0] * d + [1]
 
-            weekly[6] = 0            # enforce week 7 = 0
-            weekly[-3:] = [0, 0, 0]  # keep 13–15 separate
+            weekly[6] = 0            # week 7 off
+            weekly[-3:] = [0, 0, 0]  # exams handled later
 
+            # Add CA effort to weeks 1..12 (skip week 7)
             for i, w in enumerate(weights):
                 week_idx = rel - 1 + i
-                if 0 <= week_idx < 12 and week_idx != 6:  # exclude week 7
+                if 0 <= week_idx < 12 and week_idx != 6:
                     weekly[week_idx] += T * w
 
-        # Spread exam effort across weeks 13..15
+        # Spread exam effort (1 - assignment%) over weeks 13..15
         exam_pct = 1.0 - assign_pct
         exam_effort = total_notional * exam_pct
         d_exam = 2
@@ -691,24 +693,21 @@ elif st.session_state.step == 3:
         for i, w in enumerate(weights):
             weekly[12 + i] += exam_effort * w
 
+        # Save module row
         df_rows[mod] = weekly
 
-    # Build DataFrame for display: rows=modules (+ TOTAL), cols=weeks 1..15
+    # Build DataFrame with rows=modules (+TOTAL row) and columns=weeks 1..15
     df_main = pd.DataFrame(df_rows, index=weeks).T
-    tot      = df_main[weeks].sum(axis=0)
-    df_total = pd.DataFrame([tot.values], index=["TOTAL"], columns=weeks)
+    tot      = df_main[weeks].sum(axis=0)                         # sum per week
+    df_total = pd.DataFrame([tot.values], index=["TOTAL"], columns=weeks)  # TOTAL row
     df       = pd.concat([df_main, df_total], axis=0)
 
-    # Add totals (1..12) and the “Pain score” metric = CV% over weeks 1..12
+    # Add per-row totals and CV% (Pain Score) for weeks 1..12
     df["Total"] = df[teaching_weeks].sum(axis=1)
     df["Pain Score"]    = (df[teaching_weeks].std(ddof=0, axis=1) / df[teaching_weeks].mean(axis=1) * 100).round(1)
     df["Colour"]= df["Pain Score"].map(colour_for_cv)
 
-    # NOTE: Below, the styled table references "Pain score" (lowercase s) in one place.
-    # That will not match the column just created ("Pain Score") and may error.
-    # Leaving code unchanged per your request—just flagging it for you.
-
-    # Toggle to show/hide the workload table
+    # Show/hide toggle for the table to keep the page lighter
     if "show_workload" not in st.session_state:
         st.session_state.show_workload = False
 
@@ -716,6 +715,7 @@ elif st.session_state.step == 3:
     if col_show.button(("Hide" if st.session_state.show_workload else "Show") + " workload table"):
         st.session_state.show_workload = not st.session_state.show_workload
 
+    # If showing, render a styled HTML table; else keep df for Excel
     if st.session_state.show_workload:
         df_disp = df.round(1)
         styled = (
@@ -726,68 +726,94 @@ elif st.session_state.step == 3:
         )
         st.markdown("<div style='overflow-x:auto'>" + styled.to_html() + "</div>", unsafe_allow_html=True)
     else:
-        # keep df_disp defined for Excel download
         df_disp = df.round(1)
 
-    # ---- Scenario computation (for Excel sheet) ----
+    # Helper to validate a shift (new deadline is within 1..12 and >= release)
     def _valid_shift(rl: int, new_dl: int) -> bool:
-        """Only allow deadlines within 1..12 and not earlier than release."""
         return 1 <= new_dl <= 12 and new_dl >= rl
 
+    # Build a list of all CAs that can be shifted (deadline within 1..12)
     _all_cas = []
     for _m, _cas_list in st.session_state.ca_map.items():
         for (_i, _w, _dl, _rl) in _cas_list:
             if 1 <= _dl <= 12:
                 _all_cas.append((_m, _i, _rl, _dl))
 
-    # Keep Excel enumeration modest (k up to 3)
+    # Limit Excel scenario enumeration to up to 3 shifts
     _excel_Kmax = min(3, len(_all_cas))
     _scenarios = generate_scenarios_exact_upto_k(
         _all_cas, _excel_Kmax, study_style,
         st.session_state.meta, st.session_state.ca_map, _valid_shift
     )
 
-    # Data for Excel “All Scenarios” sheet
-    out = (pd.DataFrame(_scenarios, columns=["no_shifts","CV","changes"])  # keeps old column names for file
+    # Prepare “All Scenarios” sheet data (with columns kept as originally used elsewhere)
+    out = (pd.DataFrame(_scenarios, columns=["no_shifts","CV","changes"])
            if _scenarios else pd.DataFrame(columns=["no_shifts","CV","changes"]))
     out = out.sort_values(["CV","no_shifts"], ascending=[True,True]).reset_index(drop=True)
 
-    # ─── Heatmaps entry point (jump to ALL pairs view) ───────────────────
+    # Button that jumps to the heatmaps page for all module pairs
     if st.button("Show all module-pair heatmaps"):
         st.session_state.heatmap_modules = "__ALL__"
         st.session_state.step = "HEATMAP"
         st.rerun()
 
-    # ─── Calendar summary + current “Pain score” ─────────────────────────
+    # Calendar section heading
     st.markdown("### Calendar")
 
+    # Compute baseline CV for current data
     base_weeks15 = recompute_all_weekly(study_style, st.session_state.meta, st.session_state.ca_map)
     base_cv = total_cv_percent(base_weeks15)
 
-    # If a shift just happened, show an arrow indicating change from previous value
-    delta_html = ""
-    _last = st.session_state.pop("_last_cv_change", None)  # show once
+    # If there is a preview set of overrides, compute its CV
+    preview_overrides = st.session_state.get("preview_overrides", None)
+    preview_cv = None
+    if preview_overrides:
+        prev_weeks = recompute_all_weekly(study_style, st.session_state.meta, st.session_state.ca_map, preview_overrides)
+        preview_cv = total_cv_percent(prev_weeks)
+
+    # Check if we just applied a shift and want to show before/after once
+    _last = st.session_state.pop("_last_cv_change", None)
+
+    # Build badges row: show before/after if available, else current; also preview
+    badges = []
+    if _last:
+        before, after = _last
+        badges.append(cv_badge(before, "Before"))
+        badges.append(cv_badge(after,  "After"))
+    else:
+        badges.append(cv_badge(base_cv, "Current"))
+
+    if preview_cv is not None:
+        badges.append(cv_badge(preview_cv, "Preview"))
+
+    # Render badges (HTML)
+    st.markdown("".join(badges), unsafe_allow_html=True)
+
+    # Small caption below badges describing current Pain score and delta if any
     if _last:
         before, after = _last
         arrow = "↓" if after < before else ("↑" if after > before else "→")
-        delta_html = f" <span style='opacity:.8'>&nbsp;({arrow}&nbsp;from&nbsp;{before:.1f}%)</span>"
+        st.markdown(
+            f"<p class='caption-lg'>Pain score (weeks 1–12): "
+            f"<b>{after:.1f}%</b> <span style='opacity:.8'>({arrow} from {before:.1f}%)</span></p>",
+            unsafe_allow_html=True
+        )
+    else:
+        st.markdown(
+            f"<p class='caption-lg'>Pain score (weeks 1–12): <b>{base_cv:.1f}%</b></p>",
+            unsafe_allow_html=True
+        )
 
-    st.markdown(
-        f"<p class='caption-lg'>Pain score (weeks 1–12): <b>{base_cv:.1f}%</b>{delta_html}</p>",
-        unsafe_allow_html=True
-    )
-
-
-    # Build calendar DF and style it for visual highlighting
+    # Build the calendar dataframe and a display copy with Module as a column
     cal_df = build_calendar_df(st.session_state.weeks)
     cal_df_display = cal_df.reset_index()
-    week_cols = [c for c in cal_df_display.columns if c.startswith("week")]
+    week_cols = [c for c in cal_df_display.columns if c.startswith("week")]  # week columns
 
-    n_weeks = len(week_cols)
-    module_pct = 16                 # width % for the Module column
-    week_pct   = (100 - module_pct) / n_weeks
+    n_weeks = len(week_cols)  # number of week columns
+    module_pct = 16           # % width of Module column
+    week_pct   = (100 - module_pct) / n_weeks  # width per week column
 
-    # CSS to make the calendar large, scrollable, and readable
+    # Inject CSS to make the calendar table scrollable and readable
     st.markdown("""
     <style>
     .block-container {padding-left: 1rem; padding-right: 1rem;}
@@ -803,12 +829,12 @@ elif st.session_state.step == 3:
     </style>
     """, unsafe_allow_html=True)
 
-    # If user is previewing overrides (from Recommendations), use them
+    # If preview overrides exist, use them for the per-module stripe coloring
     preview = st.session_state.get("preview_overrides", {})
     weeks15_by_mod = recompute_all_weekly(study_style, st.session_state.meta, st.session_state.ca_map,
                                           preview if preview else None)
 
-    # Helper for per-module “Pain score” colour stripe on the left border
+    # Helper to compute per-module CV% (1..12) used for the left stripe color
     def _cv_percent_1to12(weekly):
         vals = weekly[:12]
         m = sum(vals)/12 if vals else 0.0
@@ -816,10 +842,12 @@ elif st.session_state.step == 3:
         var = sum((x - m)**2 for x in vals) / 12
         return (var ** 0.5) / m * 100.0
 
+    # Map color names to hex for the stripe
     band_hex = {"green":"#2ecc71","yellow":"#f1c40f","orange":"#e67e22","red":"#e74c3c","black":"#000000"}
+    # Decide stripe color per module based on its CV band
     row_band = {m: colour_for_cv(_cv_percent_1to12(w)) for m,w in weeks15_by_mod.items()}
 
-    # Style each cell based on content and band, add ghost/preview visuals
+    # Style function for week columns (adds backgrounds, outlines, stripes)
     def _color_calendar(col: pd.Series) -> list[str]:
         styles = []
         col_name = col.name
@@ -848,7 +876,7 @@ elif st.session_state.step == 3:
             styles.append(style)
         return styles
 
-    # Left border colour bar per module (based on its band)
+    # Style function for Module column to add a wider left stripe
     def _stripe_module_col(col: pd.Series) -> list[str]:
         styles = []
         for i, _ in enumerate(col):
@@ -857,36 +885,40 @@ elif st.session_state.step == 3:
             styles.append(f"border-left: 8px solid {stripe};")
         return styles
 
-    # Render the calendar table as styled HTML (for more control than st.dataframe)
+    # Imports needed to generate a cache key for the calendar HTML
     import hashlib, json
 
+    # Create a stable key for caching the HTML representation of the calendar
     def _calendar_key(df_display, row_band, week_cols):
-        # Make preview_overrides and last_applied_moves JSON-safe
+        # Get preview/applied info from session (or empty)
         preview_raw = st.session_state.get("preview_overrides", {}) or {}
         moves_raw   = st.session_state.get("last_applied_moves", {}) or {}
 
-        # stringify tuple keys like ("ELEC101", 2) -> "ELEC101::2"
+        # Convert tuple keys to strings so we can JSON-serialize
         preview_safe = {f"{m}::{i}": dl for (m, i), dl in preview_raw.items()}
-        # moves values are tuples too -> store as a small list for determinism
+        # Convert move tuples to lists for JSON
         moves_safe   = {f"{m}::{i}": [old, new] for (m, i), (old, new) in moves_raw.items()}
 
+        # Build a compact JSON payload that changes when the table visuals change
         payload = {
             "data": df_display.fillna("").astype(str).to_dict(orient="list"),
-            "row_band": row_band,                # {module: "green"/...} – already JSONable
-            "preview": preview_safe,             # now JSON-safe
-            "moves": moves_safe,                 # now JSON-safe
-            "weeks": week_cols,                  # list of strings
+            "row_band": row_band,
+            "preview": preview_safe,
+            "moves": moves_safe,
+            "weeks": week_cols,
         }
         s = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hashlib.sha1(s).hexdigest()
 
-
+    # Prepare a place in session to cache the calendar HTML
     if "calendar_cache" not in st.session_state:
         st.session_state.calendar_cache = {}
 
+    # Compute the cache key for the current calendar state
     cal_key = _calendar_key(cal_df_display, row_band, week_cols)
     html = st.session_state.calendar_cache.get(cal_key)
 
+    # If not cached, build the styled HTML and store it
     if html is None:
         calendar_styled = (
             cal_df_display.style
@@ -904,15 +936,67 @@ elif st.session_state.step == 3:
         html = calendar_styled.to_html()
         st.session_state.calendar_cache[cal_key] = html
 
+    # Render the calendar inside a scrollable container
     st.markdown(f"<div class='calendar-wrap'>{html}</div>", unsafe_allow_html=True)
+
+    # Short legend explaining the colors/styles used in the calendar cells
     st.caption("Legend: left border colour = CV band (green/yellow/orange/red/black); pale blue = CA; deeper amber = multiple CAs; yellow (dashed) = preview move; purple = exam; grey = week 7.")
 
-    # ── Recommendations UI (choose number of shifts to consider) ──
+    # Add a visible legend with the same colors as used in the cells
+    st.markdown("""
+    <div style="margin:8px 0; display:flex; flex-wrap:wrap; gap:12px;">
+
+    <span style="display:inline-block; background-color:#2ecc71; color:#fff; padding:4px 10px; border-radius:4px;">
+        CV band: Green (&lt;92%)
+    </span>
+
+    <span style="display:inline-block; background-color:#f1c40f; color:#111; padding:4px 10px; border-radius:4px;">
+        CV band: Yellow (92–101.9%)
+    </span>
+
+    <span style="display:inline-block; background-color:#e67e22; color:#fff; padding:4px 10px; border-radius:4px;">
+        CV band: Orange (102–111.9%)
+    </span>
+
+    <span style="display:inline-block; background-color:#e74c3c; color:#fff; padding:4px 10px; border-radius:4px;">
+        CV band: Red (112–119.9%)
+    </span>
+
+    <span style="display:inline-block; background-color:#000; color:#fff; padding:4px 10px; border-radius:4px;">
+        CV band: Black (≥120%)
+    </span>
+
+    <span style="display:inline-block; background-color:#e3f2fd; color:#111; padding:4px 10px; border-radius:4px;">
+        CA deadline
+    </span>
+
+    <span style="display:inline-block; background-color:#ffcc80; color:#111; padding:4px 10px; border-radius:4px;">
+        Multiple CAs
+    </span>
+
+    <span style="display:inline-block; background-color:#fff3cd; color:#111; border:2px dashed #856404; padding:4px 10px; border-radius:4px;">
+        Preview move
+    </span>
+
+    <span style="display:inline-block; background-color:#ede7f6; color:#111; padding:4px 10px; border-radius:4px;">
+        Exam
+    </span>
+
+    <span style="display:inline-block; background-color:#3a3a3a; color:#eee; padding:4px 10px; border-radius:4px;">
+        Week 7 (Reading week)
+    </span>
+
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Recommendations header
     st.subheader("Recommendations")
 
+    # Default number of shifts to evaluate
     if "N" not in st.session_state:
-        st.session_state.N = 2          # default number of shifts to evaluate
+        st.session_state.N = 2
 
+    # UI to set N and show results
     col_num, col_btn, _ = st.columns([1.2, 0.8, 6])
     with col_num:
         N_typed = st.number_input(
@@ -926,14 +1010,14 @@ elif st.session_state.step == 3:
             st.session_state.N = int(N_typed)
             st.rerun()
 
-    # Undo box appears after you apply a set of shifts
+    # If we have an undo available, show the undo box
     if st.session_state.get("undo_payload"):
         with st.container(border=True):
             st.write("**Undo last shift**")
             if st.session_state.get("undo_caption"):
                 st.caption(st.session_state.undo_caption)
             if st.button("Undo"):
-                # Revert deadlines for each CA in the undo payload
+                # Revert each CA deadline to its previous value
                 for (m, idx), old_dl in st.session_state.undo_payload.items():
                     old_list = st.session_state.ca_map.get(m, [])
                     new_list = []
@@ -943,53 +1027,53 @@ elif st.session_state.step == 3:
                         new_list.append((j, wt, dl, rl))
                     st.session_state.ca_map[m] = new_list
                     save_cas(m, new_list)
+                # Clear last moves and undo info
                 st.session_state.last_applied_moves = {}
                 st.session_state.undo_payload = None
                 st.session_state.undo_caption = ""
                 st.success("Reverted last shift.")
                 st.rerun()
 
-    # Build the set of adjustable CAs (1..12 only)
+    # Build the list of adjustable CAs again (deadline within 1..12)
     all_cas = []
     for mod, cas_list in st.session_state.ca_map.items():
         for (idx, wt, dl, rl) in cas_list:
             if 1 <= dl <= 12:
                 all_cas.append((mod, idx, rl, dl))
 
-    # Generate scenarios for k up to N, then we’ll filter to exactly N
+    # Generate scenarios that use exactly N shifts
     scenarios = generate_scenarios_exact_upto_k(
         all_cas, st.session_state.N, study_style,
         st.session_state.meta, st.session_state.ca_map, _valid_shift
     )
 
+    # Repeat header for clarity (kept as-is)
     st.subheader("Recommendations")
 
+    # If we found scenarios, build a table and show top options
     if scenarios:
-        # Build df and filter to rows with exactly N shifts
         df_scen = pd.DataFrame(scenarios, columns=["no_shifts","Pain score","changes"])
         filtered = df_scen.query("no_shifts == @st.session_state.N")
 
-        # NOTE: Next line sorts by "CV" which no longer exists in df_scen.
-        # Leaving intact per request, but this will error at runtime.
         out_visible = (
-        filtered
-        .sort_values(["Pain score","no_shifts"], ascending=[True, True])
-        .reset_index(drop=True)
+            filtered
+            .sort_values(["Pain score","no_shifts"], ascending=[True, True])
+            .reset_index(drop=True)
         )
 
         topN = out_visible.head(5).copy()
 
-        # For each top option, show “Visualize” (preview) and “Shift now” (apply)
+        # For each top scenario, show a preview and an apply button
         for i, row in topN.iterrows():
             with st.container(border=True):
                 st.write(f"**Option {i+1}** — Pain score **{row['Pain score']:.1f}%**")
                 st.caption(row["changes"] if row["changes"] != "none" else "No changes")
                 c1, c2, _ = st.columns([1,1,6])
 
-                # Unique key to avoid Streamlit button ID collisions
+                # Unique ID for buttons to avoid collisions
                 uniq = f"{i}_{abs(hash(row['changes'])) % 10_000_000}"
 
-                # Preview: store overrides in session (yellow dashed calendar)
+                # Visualize button: store overrides and rerun (yellow dashed calendar)
                 if c1.button("Visualize", key=f"viz_cal_{uniq}"):
                     st.session_state["preview_overrides"] = {
                         (p.split(' CA#')[0].strip(), int(p.split(' CA#')[1].split('@')[0])):
@@ -998,8 +1082,7 @@ elif st.session_state.step == 3:
                     }
                     st.rerun()
 
-                # Apply: mutate ca_map deadlines, persist to DB, enable Undo
-                # Apply: mutate ca_map deadlines, persist to DB, enable Undo + show new CV
+                # Shift now button: apply the overrides, persist, enable undo, and recalc CV
                 if c2.button("Shift now", key=f"apply_cal_{uniq}"):
                     overrides = {
                         (p.split(' CA#')[0].strip(), int(p.split(' CA#')[1].split('@')[0])):
@@ -1009,12 +1092,12 @@ elif st.session_state.step == 3:
                     if not overrides:
                         st.info("No changes to apply.")
                     else:
-                        # CV BEFORE
+                        # CV before applying changes
                         cv_before = total_cv_percent(
                             recompute_all_weekly(study_style, st.session_state.meta, st.session_state.ca_map)
                         )
 
-                        # Prepare undo + last moves
+                        # Build undo map and record last moves
                         undo_map, last_moves = {}, {}
                         for (m, idx), new_dl in overrides.items():
                             for (j, wt, dl, rl) in st.session_state.ca_map.get(m, []):
@@ -1026,7 +1109,7 @@ elif st.session_state.step == 3:
                         st.session_state.undo_caption = row["changes"]
                         st.session_state.last_applied_moves = last_moves
 
-                        # Apply overrides to CA map and persist
+                        # Apply new deadlines to CA map and save to DB
                         for (m, idx), new_dl in overrides.items():
                             old_list = st.session_state.ca_map.get(m, [])
                             new_list = []
@@ -1037,34 +1120,37 @@ elif st.session_state.step == 3:
                             st.session_state.ca_map[m] = new_list
                             save_cas(m, new_list)
 
-                        # Clear preview
+                        # Clear preview flag if it was set
                         st.session_state.pop("preview_overrides", None)
 
-                        # CV AFTER
+                        # CV after applying changes
                         cv_after = total_cv_percent(
                             recompute_all_weekly(study_style, st.session_state.meta, st.session_state.ca_map)
                         )
 
-                        # Stash delta so the Calendar header can show an arrow once
+                        # Store before/after to show once in badges
                         st.session_state["_last_cv_change"] = (cv_before, cv_after)
 
+                        # Inform and rerun to refresh visuals
                         st.success(f"Shifts applied. New Pain score: {cv_after:.1f}% (was {cv_before:.1f}%).")
                         st.rerun()
 
     else:
+        # No scenarios available
         st.info("No candidate scenarios available with ±1 week shifts.")
 
-    # If preview overrides exist, allow clearing them
+    # If we are in a preview state, allow clearing it
     if st.session_state.get("preview_overrides"):
         if st.button("Reset preview"):
             st.session_state.pop("preview_overrides", None)
             st.rerun()
 
-    # ---- Download Excel file with two sheets: Workload + All Scenarios ----
+    # Build an Excel file with two sheets (Workload + All Scenarios)
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         df_disp.to_excel(writer, sheet_name="Workload")
         out.to_excel(writer, sheet_name="All Scenarios", index=False)
+    # Download button for the Excel export
     st.download_button(
         " Download Excel",
         data=buf.getvalue(),
@@ -1072,14 +1158,16 @@ elif st.session_state.step == 3:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
-    # ---- Optional: Workload line chart (TOTAL highlighted thicker) ----
+    # Prepare dataframe for the line chart of workloads over time
     chart_df = (
         df[weeks]
         .reset_index()
         .melt(id_vars="index", var_name="Week", value_name="Hours")
         .rename(columns={"index":"Module"})
     )
+    # Section header for the chart
     st.subheader("Workload Over Time")
+    # Create a line chart with a thicker line for TOTAL
     chart = (
         alt.Chart(chart_df)
         .mark_line(point=True)
@@ -1091,59 +1179,60 @@ elif st.session_state.step == 3:
         )
         .properties(width=700, height=400)
     )
+    # Render the chart
     st.altair_chart(chart, use_container_width=True)
 
-# ───────────────────────────────────────────────────────────────────────────────
-# 9) STEP "HEATMAP" — ALL-PAIRS VIEW (and fallback single-pair logic stub)
-# Draw 12x12 cross heatmaps for every pair of modules with CAs in teaching weeks.
-# ───────────────────────────────────────────────────────────────────────────────
+# ---------- STEP "HEATMAP": all-pairs heatmaps (and single-pair fallback) ----------
 elif st.session_state.step == "HEATMAP":
-    flag = st.session_state.get("heatmap_modules")
-    style = st.session_state.get("study_style", "Just in Time")
+    flag = st.session_state.get("heatmap_modules")                 # which pair(s) to show
+    style = st.session_state.get("study_style", "Just in Time")    # current study style
 
-    # ------- ALL-PAIRS PAGE -------
+    # If user chose the view for all pairs, build all grids
     if flag == "__ALL__":
 
-        # Filter modules that have at least one CA deadline in weeks 1..12
+        # Helper: check if module has any CA deadline in 1..12
         def _has_teaching_ca(mod):
             return any(1 <= dl <= 12 for (_i, _w, dl, _r) in st.session_state.ca_map.get(mod, []))
 
+        # Filter modules with at least one CA in teaching weeks
         mods_with_cas = [m for m in st.session_state.meta.keys() if _has_teaching_ca(m)]
+        # Build all unordered pairs of such modules
         pairs = list(itertools.combinations(mods_with_cas, 2))
 
+        # Page title
         st.title("All module-pair heatmaps")
 
-        # Inner function to compute and/or render one pair’s lattice
+        # Function to compute and/or render the 12x12 lattice for a pair
         def render_pair(A_mod, B_mod, highlight_coords=None, compute_only=False):
-            # Show heading unless we’re in the compute-only pass (for global min)
+            # Only show a heading if we are rendering (not in compute-only pass)
             if not compute_only:
                 st.markdown(f"### {A_mod} vs {B_mod} — CV cross heatmap")
 
-            # Extract CAs for both modules within weeks 1..12
+            # Get CA rows for both modules limited to teaching weeks
             A_cas = [(idx, wt, dl, rl) for (idx, wt, dl, rl) in st.session_state.ca_map.get(A_mod, []) if 1 <= dl <= 12]
             B_cas = [(idx, wt, dl, rl) for (idx, wt, dl, rl) in st.session_state.ca_map.get(B_mod, []) if 1 <= dl <= 12]
 
-            # Shading sets: which rows/cols contain any CA (for faint shading)
+            # Which weeks have any CA in each module (for faint row/col shading)
             A_weeks_with_ca = {dl for (_idx, _wt, dl, _rl) in A_cas}
             B_weeks_with_ca = {dl for (_idx, _wt, dl, _rl) in B_cas}
 
+            # If either module has no CAs in 1..12, skip
             if not A_cas or not B_cas:
                 if compute_only:
-                    # Skip rendering & return empty signals to caller
                     return pd.DataFrame(), None
                 st.info("One or both selected modules have no CAs with deadlines in weeks 1–12.")
                 return
 
-            # Helpers for cell colouring by band and legality checks
+            # Helper: map CV to band/color and return both
             def cv_band_and_color(cv: float):
-                if cv < 40:           return "<40",      "#2ecc71"
-                elif cv < 50:         return "40–49.9",  "#f1c40f"
-                elif cv < 65:         return "50–64.9",  "#e67e22"
-                elif cv < 80:         return "65–79.9",  "#e74c3c"
-                else:                 return "≥80",      "#b71c1c"
+                if cv < 92:            return "<92",      "#2ecc71"
+                elif cv < 102:         return "92–101.9", "#f1c40f"
+                elif cv < 112:         return "102–111.9","#e67e22"
+                elif cv < 120:         return "112–119.9","#e74c3c"
+                else:                  return "≥120",     "#b71c1c"
 
+            # Helper: check whether a shift for a given module/week by dir_ is legal
             def can_shift(mod: str, w: int, dir_: int) -> bool:
-                # legal if new week within 1..12 and not before release for any CA at that week
                 new_w = w + dir_
                 if not (1 <= new_w <= 12):
                     return False
@@ -1152,26 +1241,26 @@ elif st.session_state.step == "HEATMAP":
                         return False
                 return True
 
-            # Find actual collision weeks (same-week deadlines between A and B)
+            # Collision weeks are those where both modules have the same deadline week
             A_dead = {dl for (_i, _w, dl, _r) in A_cas} if A_cas else set()
             B_dead = {dl for (_i, _w, dl, _r) in B_cas} if B_cas else set()
             collisions = sorted(A_dead & B_dead)
 
-            # Center CV (no shifts)
+            # Center CV is the current system CV without shifting any deadlines
             base_weeks = recompute_all_weekly(style, st.session_state.meta, st.session_state.ca_map)
             center_cv = total_cv_percent(base_weeks)
 
-            # Data store for the 12x12 lattice; we’ll keep best CV per cell
+            # Prepare a 12x12 grid dict keyed by (A_week, B_week)
             grid = {(a, b): {"cv": None, "count": 0, "label": "", "band": ""} for a in range(1, 13) for b in range(1, 13)}
 
+            # Mark a cell invalid with a dash if we can't compute a value for it
             def set_invalid(a, b):
-                # mark the cell as invalid (“–”) if no label yet
                 cell = grid[(a, b)]
                 if cell["label"] == "":
                     cell["label"] = "–"
 
+            # Store a CV value into a cell, keeping the minimum if seen multiple times
             def put_cv(a, b, cv_val: float):
-                # store minimum CV and a text label; tie counts tracked but not shown
                 band, _ = cv_band_and_color(cv_val)
                 cell = grid[(a, b)]
                 if cell["cv"] is None or cv_val < cell["cv"] - 1e-9:
@@ -1183,12 +1272,11 @@ elif st.session_state.step == "HEATMAP":
                     cell["count"] += 1
                     cell["label"] = f"{cell['cv']:.1f}"
 
-            # Compute legal neighbors for each collision:
-            # center (w,w), A moves ±1, B moves ±1, and both move (diagonals), plus ring-2 orthogonals
+            # For each collision week, compute the neighborhood (center, ±1, diagonals, ±2 orthogonals)
             for w in collisions:
-                put_cv(w, w, center_cv)  # center
+                put_cv(w, w, center_cv)  # center cell is the current CV
 
-                # A moves; B stays
+                # Move A only (±1)
                 for dir_ in (-1, 1):
                     a_w = w + dir_
                     if can_shift(A_mod, w, dir_):
@@ -1201,7 +1289,7 @@ elif st.session_state.step == "HEATMAP":
                         if 1 <= a_w <= 12:
                             set_invalid(a_w, w)
 
-                # B moves; A stays
+                # Move B only (±1)
                 for dir_ in (-1, 1):
                     b_w = w + dir_
                     if can_shift(B_mod, w, dir_):
@@ -1214,7 +1302,7 @@ elif st.session_state.step == "HEATMAP":
                         if 1 <= b_w <= 12:
                             set_invalid(w, b_w)
 
-                # Both move (diagonals)
+                # Move both (diagonals: ±1,±1)
                 for dA in (-1, 1):
                     for dB in (-1, 1):
                         a_w = w + dA
@@ -1237,7 +1325,7 @@ elif st.session_state.step == "HEATMAP":
                             if 1 <= a_w <= 12 and 1 <= b_w <= 12:
                                 set_invalid(a_w, b_w)
 
-                # Ring-2 orthogonals (±2, 0) and (0, ±2)
+                # Ring-2 orthogonals (A±2,B same) and (B±2,A same)
                 for step in (-2, 2):
                     a_w = w + step
                     if can_shift(A_mod, w, step):
@@ -1259,18 +1347,18 @@ elif st.session_state.step == "HEATMAP":
                     elif 1 <= b_w <= 12:
                         set_invalid(w, b_w)
 
-            # Build a DataFrame for the lattice cells for Altair
+            # Build a tabular dataset from the grid for Altair
             all_cells = [{"A_week": a, "B_week": b} for a in range(1, 13) for b in range(1, 13)]
             rows = []
             for (a, b) in [(r["A_week"], r["B_week"]) for r in all_cells]:
                 cell = grid[(a, b)]
                 label = cell["label"]
                 band  = cell["band"]
-                if band == "<40":         color = "#2ecc71"
-                elif band == "40–49.9":   color = "#f1c40f"
-                elif band == "50–64.9":   color = "#e67e22"
-                elif band == "65–79.9":   color = "#e74c3c"
-                elif band == "≥80":       color = "#b71c1c"
+                if band == "<92":         color = "#2ecc71"
+                elif band == "92–101.9":  color = "#f1c40f"
+                elif band == "102–111.9": color = "#e67e22"
+                elif band == "112–119.9": color = "#e74c3c"
+                elif band == "≥120":      color = "#b71c1c"
                 else:                     color = None
                 rows.append({
                     "A_week": a, "B_week": b, "Label": label, "Band": band, "Color": color,
@@ -1278,25 +1366,22 @@ elif st.session_state.step == "HEATMAP":
                     "RowHasA": (a in A_weeks_with_ca), "ColHasB": (b in B_weeks_with_ca),
                 })
 
-            grid_df = pd.DataFrame(rows)
-            # Numeric form of the label for min calculations
-            grid_df["CVnum"] = pd.to_numeric(grid_df["Label"], errors="coerce")
-
-            # Flag the cells that represent actual collisions (diagonal & real)
+            grid_df = pd.DataFrame(rows)  # dataframe for charting
+            grid_df["CVnum"] = pd.to_numeric(grid_df["Label"], errors="coerce")  # numeric CV
             grid_df["IsCollision"] = grid_df.apply(
                 lambda r: (int(r["A_week"]) == int(r["B_week"])) and (int(r["A_week"]) in collisions),
                 axis=1
             )
 
-            # Minimum CV for this pair (to compare across pairs)
+            # Find the minimum CV in this pair (for overall comparison)
             pair_min_row = grid_df.dropna(subset=["CVnum"]).nsmallest(1, "CVnum")
             pair_min_cv = float(pair_min_row.iloc[0]["CVnum"]) if not pair_min_row.empty else None
 
+            # If we are only computing stats, return now
             if compute_only:
-                # Return the data (no chart) so the caller can compute global minimum
                 return grid_df, pair_min_cv
 
-            # If caller passed highlight coords (global mins), mark them
+            # If global highlight coordinates are provided, mark them
             if highlight_coords:
                 highlight_set = set(highlight_coords)
                 grid_df["IsGlobalBest"] = grid_df.apply(
@@ -1305,16 +1390,17 @@ elif st.session_state.step == "HEATMAP":
             else:
                 grid_df["IsGlobalBest"] = False
 
-            band_domain = ["<40", "40–49.9", "50–64.9", "65–79.9", "≥80"]
+            # Define band colors and domains for the heat layer
+            band_domain = ["<92", "92–101.9", "102–111.9", "112–119.9", "≥120"]
             band_colors = ["#2ecc71", "#f1c40f", "#e67e22", "#e74c3c", "#b71c1c"]
 
-            # Layout sizes for a spacious grid
+            # Determine chart pixel size (12x12 grid cells)
             cell_size = 60
             chart_width = cell_size * 12
             chart_height = cell_size * 12
-            Y_DOMAIN_DESC = list(range(12, 0, -1))  # show 12 at the top
+            Y_DOMAIN_DESC = list(range(12, 0, -1))  # invert y so 12 is at top
 
-            # Faint shading where rows/cols have at least one CA
+            # Blue-ish shading for rows that have any CA in A module
             row_shade = (
                 alt.Chart(grid_df)
                 .mark_rect(opacity=0.28, fill="#42a5f5", stroke=None)
@@ -1326,6 +1412,7 @@ elif st.session_state.step == "HEATMAP":
                 .properties(width=chart_width, height=chart_height)
             )
 
+            # Orange-ish shading for columns that have any CA in B module
             col_shade = (
                 alt.Chart(grid_df)
                 .mark_rect(opacity=0.24, fill="#ffb74d", stroke=None)
@@ -1337,7 +1424,7 @@ elif st.session_state.step == "HEATMAP":
                 .properties(width=chart_width, height=chart_height)
             )
 
-            # Base lattice with axes
+            # Base lattice with visible axes/ticks
             lattice = (
                 alt.Chart(grid_df)
                 .mark_rect(fillOpacity=0, stroke="#9fb3c0", strokeWidth=1)
@@ -1358,7 +1445,7 @@ elif st.session_state.step == "HEATMAP":
                 .properties(width=chart_width, height=chart_height)
             )
 
-            # Banded fill by CV band
+            # Heat layer with banded colors
             heat = (
                 alt.Chart(grid_df)
                 .mark_rect(opacity=0.35, stroke=None)
@@ -1379,7 +1466,7 @@ elif st.session_state.step == "HEATMAP":
                 .properties(width=chart_width, height=chart_height)
             )
 
-            # Numeric labels in each cell (CV values or “–”)
+            # Put the numeric CV (or “–”) in each visible cell
             text_layer = (
                 alt.Chart(grid_df)
                 .mark_text(fontSize=12)
@@ -1403,7 +1490,7 @@ elif st.session_state.step == "HEATMAP":
                 .properties(width=chart_width, height=chart_height)
             )
 
-            # Blue rectangle around collision cells
+            # Blue rectangle to mark collision cells on the diagonal
             collision_overlay = (
                 alt.Chart(grid_df)
                 .mark_rect(fillOpacity=0, stroke="#1e88e5", strokeWidth=4)
@@ -1419,7 +1506,7 @@ elif st.session_state.step == "HEATMAP":
                 .properties(width=chart_width, height=chart_height)
             )
 
-            # Black rectangle around global-best cells (if any)
+            # Black rectangle to mark globally best CV cells (provided by caller)
             best_overlay = (
                 alt.Chart(grid_df)
                 .mark_rect(fillOpacity=0, strokeOpacity=1, strokeWidth=3)
@@ -1438,7 +1525,7 @@ elif st.session_state.step == "HEATMAP":
                 .properties(width=chart_width, height=chart_height)
             )
 
-            # Duplicate axes for top/right labels
+            # Top axis duplicate (for labels above the grid)
             top_axis = (
                 alt.Chart(grid_df)
                 .mark_rect(fillOpacity=0, strokeOpacity=0)
@@ -1456,6 +1543,7 @@ elif st.session_state.step == "HEATMAP":
                 .properties(width=chart_width, height=chart_height)
             )
 
+            # Right axis duplicate (for labels on the right)
             right_axis = (
                 alt.Chart(grid_df)
                 .mark_rect(fillOpacity=0, strokeOpacity=0)
@@ -1473,11 +1561,12 @@ elif st.session_state.step == "HEATMAP":
                 .properties(width=chart_width, height=chart_height)
             )
 
+            # Combine all layers into one chart
             chart = (lattice + heat + row_shade + col_shade + text_layer + top_axis + right_axis + collision_overlay + best_overlay).properties(
                 width=chart_width, height=chart_height
             )
 
-            # Tiny legend explaining the border styles
+            # Build a small legend explaining the border styles beside the chart
             legend_collision = (
                 alt.Chart(pd.DataFrame({"label": ["Collision week"]}))
                 .mark_square(size=400, filled=False, stroke="#1e88e5", strokeWidth=4)
@@ -1497,6 +1586,7 @@ elif st.session_state.step == "HEATMAP":
                 width=180, height=90
             )
 
+            # Place main chart and legend side by side
             full_chart = (
                 alt.hconcat(chart, key_chart)
                 .resolve_scale(color="independent")
@@ -1512,30 +1602,34 @@ elif st.session_state.step == "HEATMAP":
                     strokeWidth=0, fill="white"
                 )
             )
+            # Render the chart
             st.altair_chart(full_chart, use_container_width=False)
 
+            # If there were no collisions, let the user know
             if not collisions:
                 st.caption("No colliding deadlines for the selected modules (weeks 1–12).")
 
-        # If no valid pairs, tell the user; else compute and render
+        # If we have no qualifying pairs, say so
         if not pairs:
             st.info("No module pairs with CAs in weeks 1–12 were found.")
         else:
-            # PASS 1: compute per-pair minima without rendering to find the global best
-            pair_min_cv_map = {}  # (A_mod, B_mod) -> min CV for that pair (float or None)
+            # First pass: compute each pair's min CV without rendering (to find global best)
+            pair_min_cv_map = {}
             for A_mod, B_mod in pairs:
                 grid_df, pair_min_cv = render_pair(A_mod, B_mod, compute_only=True)
                 pair_min_cv_map[(A_mod, B_mod)] = pair_min_cv
 
+            # Find the smallest CV among all pairs (if any)
             valid_mins = [v for v in pair_min_cv_map.values() if v is not None]
             global_min_cv = min(valid_mins) if valid_mins else None
 
+            # Show a summary of the global best or warn if none
             if global_min_cv is None:
                 st.warning("No numeric CV values found to highlight.")
             else:
                 st.success(f"🌟 Global best Pain score is **{global_min_cv:.1f}%** (highlighted in all heatmaps below).")
 
-            # PASS 2: render all pairs; for each, highlight any cell that equals the global minimum
+            # Second pass: render each pair and highlight cells that match the global best
             tol = 1e-9
             for A_mod, B_mod in pairs:
                 highlight_coords = None
@@ -1551,13 +1645,15 @@ elif st.session_state.step == "HEATMAP":
                 render_pair(A_mod, B_mod, highlight_coords=highlight_coords)
                 st.divider()
 
+        # Back button to return to Results
         if st.button("◀ Previous"):
             st.session_state.step = 3
             st.rerun()
 
+        # Stop further execution after rendering all pairs
         st.stop()
 
-    # --- Fallback stub for single-pair heatmap (not fully implemented here) ---
+    # --- Fallback for a single pair (stubbed) ---
     pair = st.session_state.get("heatmap_modules")
     if not pair or len(pair) != 2:
         st.error("No module pair selected.")
@@ -1568,15 +1664,17 @@ elif st.session_state.step == "HEATMAP":
         A_cas = [(idx, wt, dl, rl) for (idx, wt, dl, rl) in st.session_state.ca_map.get(A_mod, []) if 1 <= dl <= 12]
         B_cas = [(idx, wt, dl, rl) for (idx, wt, dl, rl) in st.session_state.ca_map.get(B_mod, []) if 1 <= dl <= 12]
 
-        # Weeks with any CA (used for shading)
+        # Sets used to mark rows/cols that have any CA
         A_weeks_with_ca = {dl for (_idx, _wt, dl, _rl) in A_cas}
         B_weeks_with_ca = {dl for (_idx, _wt, dl, _rl) in B_cas}
 
-        # Placeholder — original Step 4 code would render here
+        # Placeholder area (full single-pair rendering lives above)
 
+        # If no collisions exist, tell the user
         if not collisions:
             st.caption("No colliding deadlines for the selected modules (weeks 1–12).")
 
+    # Back button to return to Results from the single-pair stub
     if st.button("◀ Previous"):
         st.session_state.step = 3
         st.rerun()
