@@ -789,6 +789,34 @@ elif st.session_state.step == 3:
     # Render badges (HTML)
     st.markdown("".join(badges), unsafe_allow_html=True)
 
+    # Legend for CV Pain Score colour bands (green=low, black=high)
+    st.markdown("""
+    <div style="margin:10px 0; display:flex; flex-wrap:wrap; gap:12px;">
+
+    <span style="display:inline-block; background-color:#2ecc71; color:#fff; padding:4px 10px; border-radius:4px;">
+        Green — Balanced (<92%)
+    </span>
+
+    <span style="display:inline-block; background-color:#f1c40f; color:#111; padding:4px 10px; border-radius:4px;">
+        Yellow — Monitor (92–101.9%)
+    </span>
+
+    <span style="display:inline-block; background-color:#e67e22; color:#fff; padding:4px 10px; border-radius:4px;">
+        Orange — Uneven (102–111.9%)
+    </span>
+
+    <span style="display:inline-block; background-color:#e74c3c; color:#fff; padding:4px 10px; border-radius:4px;">
+        Red — Severe (112–119.9%)
+    </span>
+
+    <span style="display:inline-block; background-color:#000; color:#fff; padding:4px 10px; border-radius:4px;">
+        Black — Critical (≥120%)
+    </span>
+
+    </div>
+    """, unsafe_allow_html=True)
+
+
     # Small caption below badges describing current Pain score and delta if any
     if _last:
         before, after = _last
