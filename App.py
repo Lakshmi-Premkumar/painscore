@@ -1,3 +1,6 @@
+from dotenv import load_dotenv
+load_dotenv()  # Load environment variables from .env
+
 # Import Streamlit for the web UI
 import streamlit as st
 # Import pandas for data handling
@@ -33,6 +36,9 @@ st.markdown("""
   }
 </style>
 """, unsafe_allow_html=True)
+
+import os
+print("Database URL:", os.getenv("DATABASE_URL"))
 
 # Make sure database tables exist before we query/save anything
 ensure_schema()
@@ -106,7 +112,6 @@ elif choice == "Heatmaps (all pairs)":
     st.session_state.step = "HEATMAP"
 
 # ---------- Helper functions ----------
-
 # Return a simple color band name for a CV% value
 def colour_for_cv(cv: float) -> str:
     """
